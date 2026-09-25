@@ -1,0 +1,1421 @@
+<!DOCTYPE html>
+<!--
+    18_qunziliao —— 群聊资料（修改群名称 / 群公告 / 群管理员）
+
+    入口：7 页群聊顶栏「…」键 → 18_qunziliao.html?id=<群id>&from=7
+    出口：保存 → 写回「群聊列表」→ 回 7 页（标题自动更新）
+          返回键 → ?from= 优先，其次 referrer，都没有回 1 页
+
+    ★ 交互（照微信「群聊信息」）：
+        群头像（成员 2×2 拼图）→ 群名称（可改，空则回退默认）
+        → 群公告（多行，可改）→ 群管理员（在成员里多选）
+        → 成员列表（只读，标出「群主 / 管理员」）→ 底部「保存」
+
+    ★★ 数据契约：群【只存在】「群聊列表」里，不进「联系人索引」。
+        群聊列表 = [{ id:'g_xxx', 名称, 公告, 管理员:[成员id...],
+                      成员:[{id,名,头像}], 消息, 时间, 建群时间 }]
+      ★ 本页【新增】两个字段：公告、管理员 —— 老数据没有这两个字段时按空处理，
+        不会崩，也不会把已有群的数据抹掉。
+
+    ★ 角色规则：
+        群主 = 建群的人（这里没有登录体系，约定为【成员列表第一位之外】的"我"）。
+        —— 群里存的「成员」是【除我以外】的人，所以「我」天然是群主且不可取消。
+        管理员 = 在「成员」里勾选的人（可多选、可取消）。
+
+    风格：与 1~17 页统一（同色板、毛玻璃、灰描边、深灰强调、SVG 图标）。
+-->
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>群聊资料</title>
+    <style>
+        :root {
+            --ink: #333336;
+            --ink-2: #55555a;
+            --ink-3: #7a7a80;
+            --ink-4: #a4a4aa;
+            --accent: #4a4a50;
+            --accent-soft: #d5d5d9;
+            --accent-hi: #e6e6ea;
+            --accent-ink: #35353b;
+            --panel: 255, 255, 255;
+            --line: 158, 158, 162;
+            --shade: 48, 48, 54;
+            --glass: 0.5;
+            --blur: 14px;
+            --blur-sm: 8px;
+            /* ★★ hex 变量【不能】进 rgba() —— 会被整条丢弃。
+               要带透明度就用下面这批数值形式的伴生变量。 */
+            --ink-rgb: 51, 51, 54;
+            --ink-2-rgb: 85, 85, 90;
+            --ink-3-rgb: 122, 122, 128;
+            --ink-4-rgb: 164, 164, 170;
+            --accent-rgb: 74, 74, 80;
+            --accent-soft-rgb: 213, 213, 217;
+            --accent-hi-rgb: 230, 230, 234;
+            --accent-ink-rgb: 53, 53, 59;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { overflow-x: hidden; touch-action: pan-y; }
+        body {
+            background-color: #dadae0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--ink-2); display: flex; justify-content: center; align-items: center;
+            min-height: 100dvh; overflow: hidden; overflow-x: hidden; touch-action: pan-y;
+        }
+        .手机主题背景容器 {
+            width: 100%; max-width: 430px; height: 100dvh; min-height: 100dvh;
+            position: relative; background-color: transparent;
+            overflow: hidden; overflow-x: hidden;
+            box-shadow: 0 0 20px rgba(var(--shade), 0.16);
+            display: flex; flex-direction: column; touch-action: pan-y;
+            padding-top: env(safe-area-inset-top, 0px);
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+            padding-left: env(safe-area-inset-left, 0px);
+            padding-right: env(safe-area-inset-right, 0px);
+        }
+        @media (max-width: 430px) { .手机主题背景容器 { box-shadow: none; } }
+        .主题背景图片 {
+            width: 100%; height: 100dvh; object-fit: cover; object-position: center;
+            display: block; position: absolute; top: 0; left: 0; z-index: 0; pointer-events: none;
+        }
+        .全局白色遮罩 {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(var(--panel), 0.45); z-index: 1; pointer-events: none;
+        }
+
+        /* ===== 顶部：返回 /「群聊资料」/ 右侧占位 ===== */
+        .顶部固定区 {
+            position: relative; z-index: 10;
+            background: rgba(var(--panel), var(--glass));
+            -webkit-backdrop-filter: blur(var(--blur)) saturate(150%) brightness(1.06);
+            backdrop-filter: blur(var(--blur)) saturate(150%) brightness(1.06);
+            flex-shrink: 0; padding-bottom: clamp(6px, 2vw, 10px);
+        }
+        .顶部导航栏 {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: clamp(10px, 3vw, 14px) clamp(12px, 4vw, 16px) clamp(6px, 2vw, 8px);
+            font-size: clamp(12px, 3.5vw, 14px); color: var(--ink-2); position: relative;
+        }
+        .返回按钮 {
+            cursor: pointer; width: clamp(24px, 7vw, 28px); height: clamp(24px, 7vw, 28px);
+            display: flex; justify-content: center; align-items: center; border-radius: 50%;
+            flex-shrink: 0; -webkit-tap-highlight-color: transparent;
+        }
+        .返回按钮 svg { width: clamp(17px, 4.8vw, 20px); height: clamp(17px, 4.8vw, 20px); fill: none; stroke: var(--ink); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+        .中间标题 {
+            position: absolute; left: 50%; transform: translateX(-50%);
+            font-size: clamp(15px, 4.3vw, 17px); font-weight: 600; color: var(--ink);
+            letter-spacing: .5px; white-space: nowrap;
+        }
+        .右侧占位 { width: clamp(24px, 7vw, 28px); flex-shrink: 0; }
+
+        .手机界面内容 {
+            flex: 1; overflow-y: auto; overflow-x: hidden;
+            -webkit-overflow-scrolling: touch; position: relative; z-index: 5;
+            padding: clamp(6px, 1.8vw, 10px) 0 clamp(96px, 26vw, 120px);
+        }
+
+        /* ===== 群头部：拼图头像 + 群名 + 人数 ===== */
+        .群头部 {
+            display: flex; align-items: center; gap: clamp(11px, 3.2vw, 15px);
+            padding: clamp(12px, 3.4vw, 17px) clamp(14px, 4vw, 18px);
+        }
+        .群拼图 {
+            width: clamp(54px, 15.4vw, 64px); height: clamp(54px, 15.4vw, 64px);
+            border-radius: 14px; overflow: hidden; flex-shrink: 0;
+            display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+            gap: 1px; background: rgba(var(--line), 0.2);
+        }
+        .群拼图 img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .群头信息 { min-width: 0; }
+        .群头名 {
+            font-size: clamp(15px, 4.3vw, 17px); font-weight: 600; color: var(--ink);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .群头人数 { margin-top: 4px; font-size: clamp(11.5px, 3.3vw, 12.5px); color: var(--ink-3); }
+
+        /* ===== 分区 ===== */
+        .分区标题 {
+            padding: clamp(12px, 3.4vw, 16px) clamp(14px, 4vw, 18px) clamp(6px, 1.8vw, 8px);
+            font-size: clamp(11.5px, 3.3vw, 12.5px); color: var(--ink-3);
+        }
+        .卡片 {
+            margin: 0 clamp(12px, 4vw, 16px) clamp(9px, 2.6vw, 12px);
+            background: rgba(var(--panel), var(--glass));
+            border-radius: 14px; overflow: hidden;
+        }
+        .行 {
+            display: flex; align-items: center; gap: 10px;
+            padding: clamp(11px, 3.2vw, 14px) clamp(13px, 3.6vw, 16px);
+        }
+        .行 + .行 { border-top: 1px solid rgba(var(--line), 0.18); }
+        .行标签 {
+            font-size: clamp(12.5px, 3.5vw, 14px); color: var(--ink-3);
+            flex-shrink: 0; width: clamp(60px, 17vw, 72px);
+        }
+        .文本输入 {
+            flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+            font-size: clamp(13px, 3.6vw, 14.5px); color: var(--ink);
+            font-family: inherit;
+        }
+        .文本输入::placeholder { color: var(--ink-4); }
+
+        /* ★ 群公告：多行，整体一块（不是单行 input） */
+        .公告区 { padding: clamp(11px, 3.2vw, 14px) clamp(13px, 3.6vw, 16px); }
+        .公告输入 {
+            width: 100%; min-height: clamp(74px, 21vw, 92px); resize: none;
+            border: none; outline: none; background: transparent;
+            font-size: clamp(12.5px, 3.5vw, 14px); color: var(--ink);
+            line-height: 1.6; font-family: inherit;
+        }
+        .公告输入::placeholder { color: var(--ink-4); }
+        .公告计数 {
+            text-align: right; margin-top: 4px;
+            font-size: clamp(10.5px, 3vw, 11.5px); color: var(--ink-4);
+        }
+
+        /* ===== 成员行（管理员可勾选 / 普通成员只读）===== */
+        .成员行 {
+            display: flex; align-items: center; gap: clamp(9px, 2.6vw, 12px);
+            padding: clamp(8px, 2.4vw, 11px) clamp(13px, 3.6vw, 16px);
+            cursor: pointer; -webkit-tap-highlight-color: transparent;
+        }
+        .成员行:active { background: rgba(var(--line), 0.08); }
+        .勾选圈 {
+            width: clamp(19px, 5.4vw, 22px); height: clamp(19px, 5.4vw, 22px);
+            border-radius: 50%; flex-shrink: 0;
+            border: 1.6px solid rgba(var(--line), 0.5);
+            display: flex; align-items: center; justify-content: center;
+            transition: background .16s, border-color .16s;
+        }
+        .成员行.选中 .勾选圈 {
+            background: rgba(var(--accent-rgb), 0.92);
+            border-color: rgba(var(--accent-rgb), 0.92);
+        }
+        .勾选圈 svg { width: 70%; height: 70%; fill: none; stroke: #fff; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+        .成员行.选中 .勾选圈 svg { opacity: 1; }
+        .成员头像 {
+            width: clamp(34px, 9.6vw, 40px); height: clamp(34px, 9.6vw, 40px);
+            border-radius: 50%; object-fit: cover; flex-shrink: 0;
+            border: 1px solid rgba(var(--line), 0.22);
+        }
+        .成员名 {
+            font-size: clamp(13.5px, 3.9vw, 15px); color: var(--ink);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .成员徽 {
+            margin-left: auto; flex-shrink: 0;
+            font-size: clamp(10px, 2.9vw, 11.5px); color: var(--ink-3);
+            padding: 2px clamp(6px, 1.8vw, 8px); border-radius: 999px;
+            background: rgba(var(--line), 0.14);
+        }
+
+        /* ★ 移除成员：点它只踢人，不能顺带把该行勾成管理员
+             —— 所以要 stopPropagation，否则一次点击触发两个意图。 */
+        .成员删 {
+            margin-left: auto; flex-shrink: 0;
+            width: clamp(20px, 5.8vw, 24px); height: clamp(20px, 5.8vw, 24px);
+            border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            font-size: clamp(14px, 4vw, 16px); line-height: 1; color: var(--ink-3);
+            background: rgba(var(--line), 0.14);
+            cursor: pointer; -webkit-tap-highlight-color: transparent;
+        }
+        .成员删:active { background: rgba(var(--accent-rgb), 0.16); color: var(--ink); }
+        .成员行.选中 .成员删 { margin-left: 6px; }
+
+        /* ★ 添加成员格：微信同款，放在成员列表最后一张 */
+        .加成员行 {
+            display: flex; align-items: center; gap: clamp(9px, 2.6vw, 12px);
+            padding: clamp(8px, 2.4vw, 11px) clamp(13px, 3.6vw, 16px);
+            cursor: pointer; -webkit-tap-highlight-color: transparent;
+        }
+        .加成员行:active { background: rgba(var(--line), 0.08); }
+        .加成员圈 {
+            width: clamp(34px, 9.6vw, 40px); height: clamp(34px, 9.6vw, 40px);
+            border-radius: 50%; flex-shrink: 0;
+            border: 1.4px dashed rgba(var(--line), 0.55);
+            display: flex; align-items: center; justify-content: center;
+            margin-left: calc(clamp(19px, 5.4vw, 22px) + clamp(9px, 2.6vw, 12px));
+            color: var(--ink-3); font-size: clamp(17px, 4.8vw, 20px); line-height: 1;
+        }
+        .加成员文 { font-size: clamp(13.5px, 3.9vw, 15px); color: var(--ink-2); }
+
+        /* ★ 群主行：不是可选成员，单独列在成员区最上面，标「群主」 */
+        .群主行 {
+            display: flex; align-items: center; gap: clamp(9px, 2.6vw, 12px);
+            padding: clamp(8px, 2.4vw, 11px) clamp(13px, 3.6vw, 16px);
+        }
+        .群主头像 {
+            width: clamp(34px, 9.6vw, 40px); height: clamp(34px, 9.6vw, 40px);
+            border-radius: 50%; object-fit: cover; flex-shrink: 0;
+            border: 1px solid rgba(var(--line), 0.22);
+            margin-left: calc(clamp(19px, 5.4vw, 22px) + clamp(9px, 2.6vw, 12px));
+        }
+        .群主名 {
+            font-size: clamp(13.5px, 3.9vw, 15px); color: var(--ink);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+
+        .提示文 {
+            padding: 0 clamp(14px, 4vw, 18px);
+            font-size: clamp(10.5px, 3vw, 12px); color: var(--ink-4); line-height: 1.6;
+        }
+        .空提示 { text-align: center; color: var(--ink-3); font-size: clamp(12px, 3.4vw, 13.5px); padding: clamp(24px, 7vw, 34px); }
+
+        /* ===== 底部保存条 ===== */
+        .底部条 {
+            position: absolute; left: 0; right: 0; bottom: 0; z-index: 20;
+            padding: clamp(9px, 2.6vw, 13px) clamp(12px, 4vw, 16px);
+            padding-bottom: calc(clamp(9px, 2.6vw, 13px) + env(safe-area-inset-bottom, 0px));
+            background: rgba(var(--panel), 0.86);
+            -webkit-backdrop-filter: blur(14px) saturate(160%);
+            backdrop-filter: blur(14px) saturate(160%);
+            border-top: 1px solid rgba(var(--line), 0.2);
+        }
+        .保存钮 {
+            width: 100%; padding: clamp(10px, 2.9vw, 13px);
+            border: none; border-radius: 999px;
+            background: rgba(var(--accent-rgb), 0.92); color: #fff;
+            font-size: clamp(13.5px, 3.9vw, 15px); font-weight: 600;
+            cursor: pointer; -webkit-tap-highlight-color: transparent;
+        }
+        .保存钮:active { background: rgba(var(--accent-ink-rgb), 0.92); }
+
+        .toast {
+            position: absolute; left: 50%; bottom: clamp(70px, 20vw, 96px);
+            transform: translateX(-50%) translateY(8px);
+            background: rgba(var(--shade), 0.86); color: #fff;
+            padding: clamp(8px, 2.3vw, 10px) clamp(14px, 4vw, 18px);
+            border-radius: 999px; font-size: clamp(12px, 3.4vw, 13.5px);
+            opacity: 0; pointer-events: none; transition: opacity .24s, transform .24s;
+            z-index: 400; white-space: nowrap;
+        }
+        .toast.显示 { opacity: 1; transform: translateX(-50%) translateY(0); }
+    </style>
+</head>
+<body>
+    <div class="手机主题背景容器">
+        <img class="主题背景图片" id="主题背景图片" src="2【图片】/默认主题背景.png" alt="手机主题背景占位图">
+        <div class="全局白色遮罩"></div>
+
+        <div class="顶部固定区">
+            <div class="顶部导航栏">
+                <div class="返回按钮" id="返回按钮" role="button" aria-label="返回">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <polyline points="15 6 9 12 15 18"></polyline>
+                    </svg>
+                </div>
+                <div class="中间标题" id="页面标题">群聊资料</div>
+                <div class="右侧占位"></div>
+            </div>
+        </div>
+
+        <div class="手机界面内容">
+            <div class="群头部">
+                <div class="群拼图" id="群拼图"></div>
+                <div class="群头信息">
+                    <div class="群头名" id="群头名">群聊</div>
+                    <div class="群头人数" id="群头人数"></div>
+                </div>
+            </div>
+
+            <div class="分区标题">群资料</div>
+            <div class="卡片">
+                <div class="行">
+                    <span class="行标签">群名称</span>
+                    <input class="文本输入" id="群名输入" type="text"
+                           placeholder="给群起个名字" maxlength="20" autocomplete="off" />
+                </div>
+                <div class="行">
+                    <span class="行标签">我的昵称</span>
+                    <input class="文本输入" id="我的昵称输入" type="text"
+                           placeholder="在本群里显示的名字" maxlength="16" autocomplete="off" />
+                </div>
+            </div>
+
+            <div class="卡片">
+                <div class="公告区">
+                    <textarea class="公告输入" id="公告输入"
+                              placeholder="填写群公告，成员进群时可以看到" maxlength="200"></textarea>
+                    <div class="公告计数" id="公告计数">0 / 200</div>
+                </div>
+            </div>
+            <div class="提示文">群名称留空时会回退成按成员名自动生成的名字；「我的昵称」只在本群内生效。</div>
+
+            <div class="分区标题">群管理员</div>
+            <div class="卡片" id="管理员卡"></div>
+            <div class="提示文">点成员可设为管理员或取消；「我」是群主，不可取消。</div>
+
+            <div class="分区标题">群成员</div>
+            <div class="卡片" id="成员卡"></div>
+            <div class="空提示" id="空提示" style="display:none">群里还没有其他成员</div>
+        </div>
+
+        <div class="底部条">
+            <button class="保存钮" id="保存钮" type="button">保存</button>
+        </div>
+
+        <div class="toast" id="toast"></div>
+    </div>
+
+    <script>
+    /* ===== 0. 轻提示 ===== */
+    const toast = document.getElementById('toast');
+    let toast计时器 = null;
+    function 提示(消息) {
+        toast.textContent = 消息;
+        toast.classList.add('显示');
+        clearTimeout(toast计时器);
+        toast计时器 = setTimeout(() => toast.classList.remove('显示'), 1900);
+    }
+
+    /* ============================================================
+     * 1. 数据：读「群聊列表」里的当前群
+     * ============================================================ */
+    const 群键 = '群聊列表';
+    const 占位头像 = '2【图片】/圆形头像1.png';
+    const 参数 = new URLSearchParams(location.search);
+    const 群ID = 参数.get('id') || '';
+    /* ★ 来源提前声明：跳 17 页「添加成员」时要把它当 back 传过去，
+         放在文件后半段的话，前面那条跳转链路会踩到 TDZ。 */
+    const 来源 = 参数.get('from') || '';
+    /* ★ 上层来源 b=：7 页进本页时会把自己的来源塞进 b（例如从 4 页进群聊，b=4）。
+         保存后回 7 页必须把它续上，否则 7 页重新加载后来源变空，
+         再按返回就会掉到 1 页 —— 从 4 页进来的人会被莫名其妙送回首页。 */
+    const 上层来源 = 参数.get('b') || '';
+
+    function 读JSON(键, 兜底) {
+        try { const v = JSON.parse(localStorage.getItem(键)); return v == null ? 兜底 : v; } catch (e) { return 兜底; }
+    }
+    function 写JSON(键, 值) {
+        try { localStorage.setItem(键, JSON.stringify(值)); } catch (e) {}
+    }
+
+    /** 取当前群对象（原始数据引用，保存时直接改它） */
+    function 找群() {
+        if (!群ID) return null;
+        const 表 = 读JSON(群键, []);
+        if (!Array.isArray(表)) return null;
+        return 表.find(g => g && String(g.id) === String(群ID)) || null;
+    }
+
+    const 群 = 找群();
+
+    /* ★ 群里存的「成员」是【除我以外】的人 —— 「我」是群主，不在成员表内。
+         老数据可能没有 公告 / 管理员 字段，按空处理，不能崩。 */
+    const 成员表 = (群 && Array.isArray(群.成员)) ? 群.成员 : [];
+    const 管理员集 = new Set(
+        Array.isArray(群 && 群.管理员) ? 群.管理员.map(String) : []
+    );
+    /** 默认群名：按成员名拼（与 17 页建群时一致） */
+    function 默认群名() {
+        const 名 = 成员表.map(m => String((m && m.名) || '')).filter(Boolean);
+        return 名.length ? 名.slice(0, 3).join('、') + (名.length > 3 ? ' 等' : '') : '群聊';
+    }
+    const 群名输入 = document.getElementById('群名输入');
+    const 我的昵称输入 = document.getElementById('我的昵称输入');
+    const 公告输入 = document.getElementById('公告输入');
+    const 公告计数 = document.getElementById('公告计数');
+
+    /* ============================================================
+     * 2. 群不存在 → 给一句明确反馈，不留白页
+     * ============================================================ */
+    if (!群) {
+        document.getElementById('群头名').textContent = '群不存在';
+        document.getElementById('空提示').textContent = '找不到这个群，可能已被删除';
+        document.getElementById('空提示').style.display = '';
+        document.getElementById('保存钮').disabled = true;
+        document.getElementById('保存钮').style.opacity = '.45';
+    } else {
+        填头部();
+        填资料();
+        填管理员();
+        填成员();
+    }
+
+    /** ① 头部：拼图头像 + 群名 + 人数 */
+    function 填头部() {
+        const 图 = document.getElementById('群拼图');
+        图.innerHTML = '';
+        /* 2×2 拼图：最多取 4 张（微信同款） */
+        成员表.slice(0, 4).forEach(m => {
+            const img = document.createElement('img');
+            img.alt = '';
+            /* ★ 用 onerror = 赋值（不是 addEventListener）——
+                 后者每次重试会多叠一个监听器，头像一多就乱套。 */
+            img.onerror = () => { img.onerror = null; img.src = 占位头像; };
+            img.src = String((m && m.头像) || '') || 占位头像;
+            图.appendChild(img);
+        });
+        /* 不足 4 人时用占位补齐，拼图不会缺角 */
+        for (let i = 成员表.length; i < Math.min(4, 2); i++) {
+            const img = document.createElement('img');
+            img.src = 占位头像; img.alt = '';
+            图.appendChild(img);
+        }
+
+        document.getElementById('群头名').textContent = String(群.名称 || 默认群名());
+        document.getElementById('群头人数').textContent =
+            '群成员 ' + (成员表.length + 1) + ' 人（含群主）';
+    }
+
+    /** ② 资料：群名称 + 我的昵称 + 群公告 */
+    function 填资料() {
+        群名输入.value = String(群.名称 || '');
+        群名输入.placeholder = 默认群名();
+        /* ★ 我的昵称：老数据没有这个字段 → 空串，不崩 */
+        我的昵称输入.value = String(群.我的昵称 || '');
+        公告输入.value = String(群.公告 || '');
+        刷新计数();
+        公告输入.addEventListener('input', 刷新计数);
+    }
+    function 刷新计数() {
+        公告计数.textContent = 公告输入.value.length + ' / 200';
+    }
+
+    /** ③ 群管理员：在成员里多选 */
+    function 填管理员() {
+        const 卡 = document.getElementById('管理员卡');
+        卡.innerHTML = '';
+        if (!成员表.length) {
+            卡.innerHTML = '<div class="成员行"><span class="成员名">群里还没有其他成员</span></div>';
+            return;
+        }
+        成员表.forEach(m => 建成员行(卡, m, true));
+        刷新徽标();
+    }
+
+    /** ④ 群成员：只读列表（也标出管理员身份） */
+    function 填成员() {
+        const 卡 = document.getElementById('成员卡');
+        卡.innerHTML = '';
+        if (!成员表.length) {
+            document.getElementById('空提示').style.display = '';
+            return;
+        }
+        /* ★ 群主行（我）单独列在最上面，不可取消 */
+        const 主行 = document.createElement('div');
+        主行.className = '群主行';
+        主行.innerHTML = '<img class="群主头像" alt="" src="' + 占位头像 + '">'
+            + '<span class="群主名"></span>'
+            + '<span class="成员徽">群主</span>';
+        /* 填过「我的昵称」就显示昵称，否则显示「我」 */
+        主行.querySelector('.群主名').textContent =
+            String(群.我的昵称 || '').trim() || '我';
+        卡.appendChild(主行);
+
+        成员表.forEach(m => 建成员行(卡, m, true, true));
+
+        /* ★ 添加成员：进 17 页的 add 模式（那边会把新成员并回本群再回跳） */
+        const 加行 = document.createElement('div');
+        加行.className = '加成员行';
+        加行.id = '添加成员行';
+        加行.innerHTML = '<div class="加成员圈">+</div>'
+            + '<span class="加成员文">添加成员</span>';
+        加行.addEventListener('click', 去添加成员);
+        卡.appendChild(加行);
+
+        刷新徽标();
+    }
+
+    /**
+     * 跳 17 页「添加成员」。
+     * ★ 带上 back=当前来源：17 页加完人后回 18 页，还要能把这套参数续上，
+     *   否则 18 页重新加载时 referrer 变成了 17 页，返回链就断在半路。
+     */
+    function 去添加成员() {
+        if (!群ID) { 提示('群不存在'); return; }
+        const 目标 = '17_faqiqunliao.html?mode=add&id=' + encodeURIComponent(群ID)
+            + '&back=' + encodeURIComponent(来源 || '7')
+            /* b 为空就整段不拼，URL 里不留空的 &b= */
+            + (上层来源 ? '&b=' + encodeURIComponent(上层来源) : '');
+        try { window.最后跳转 = 目标; } catch (e) {}
+        location.href = 目标;
+    }
+
+    /**
+     * 建一行成员（管理员区与成员区共用：点一下切管理员状态）
+     * @param {HTMLElement} 容器
+     * @param {{id:string,名:string,头像:string}} m
+     * @param {boolean} 可勾   是否可点成管理员
+     * @param {boolean} 可删   是否显示「移除」（只有成员区给，管理员区不给）
+     */
+    function 建成员行(容器, m, 可勾, 可删) {
+        const id = String((m && m.id) || '');
+        const 名 = String((m && m.名) || '').trim() || '未命名';
+
+        const 行 = document.createElement('div');
+        行.className = '成员行' + (管理员集.has(id) ? ' 选中' : '');
+        行.dataset.成员 = id;
+
+        const 勾 = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+            + '<polyline points="4.5 12.5 9.5 17.5 19.5 7"></polyline></svg>';
+        行.innerHTML = '<span class="勾选圈">' + 勾 + '</span>'
+            + '<img class="成员头像" alt="">'
+            + '<span class="成员名"></span>';
+
+        const 图 = 行.querySelector('.成员头像');
+        图.onerror = () => { 图.onerror = null; 图.src = 占位头像; };
+        图.src = String((m && m.头像) || '') || 占位头像;
+        行.querySelector('.成员名').textContent = 名;
+
+        if (可勾) {
+            行.addEventListener('click', () => {
+                if (管理员集.has(id)) 管理员集.delete(id);
+                else 管理员集.add(id);
+                /* ★ 管理员区与成员区是【两份 DOM】—— 两边都要同步打勾 */
+                同步全行();
+            });
+        }
+
+        if (可删) {
+            const 删 = document.createElement('span');
+            删.className = '成员删';
+            删.textContent = '×';
+            删.title = '移除该成员';
+            /* ★★ 必须 stopPropagation：否则这一下会顺着冒泡到行上，
+                   既踢人又把它勾成管理员 —— 一次点击两个意图。 */
+            删.addEventListener('click', e => {
+                e.stopPropagation();
+                移除成员(id, 名);
+            });
+            行.appendChild(删);
+        }
+        容器.appendChild(行);
+    }
+
+    /**
+     * 移除成员：先从本地数组摘掉并整体重绘，【保存后才真正写回】。
+     * 与「管理员勾选」同款：不写盘就不落库，避免误点直接改坏数据。
+     */
+    function 移除成员(id, 名) {
+        const i = 成员表.findIndex(m => String((m && m.id) || '') === id);
+        if (i < 0) return;
+        成员表.splice(i, 1);
+        管理员集.delete(id);
+        重绘成员();
+        提示('已移除「' + 名 + '」，保存后生效');
+    }
+
+    /** 成员区 + 管理员区整体重绘（移除 / 新增成员后都要走它） */
+    function 重绘成员() {
+        填管理员();
+        填成员();
+        /* 人数跟着变（含群主） */
+        const 人 = document.getElementById('群头人数');
+        if (人) 人.textContent = '群成员 ' + (成员表.length + 1) + ' 人（含群主）';
+        /* 拼图也跟着变：填头部会重建 #群拼图 */
+        填头部();
+    }
+
+    /** 两处列表各有一份成员行 DOM，改一处必须同步另一处 */
+    function 同步全行() {
+        Array.from(document.querySelectorAll('.成员行')).forEach(行 => {
+            行.classList.toggle('选中', 管理员集.has(String(行.dataset.成员 || '')));
+        });
+        刷新徽标();
+    }
+
+    /** 徽标：管理员区显示「管理员」，未选中不显示 */
+    function 刷新徽标() {
+        Array.from(document.querySelectorAll('.成员行')).forEach(行 => {
+            const 是管 = 管理员集.has(String(行.dataset.成员 || ''));
+            let 徽 = 行.querySelector('.成员徽');
+            if (是管) {
+                if (!徽) {
+                    徽 = document.createElement('span');
+                    徽.className = '成员徽';
+                    行.appendChild(徽);
+                }
+                徽.textContent = '管理员';
+            } else if (徽) {
+                徽.remove();
+            }
+        });
+    }
+
+    /* ============================================================
+     * 3. 保存 → 写回「群聊列表」→ 回 7 页
+     * ============================================================ */
+    document.getElementById('保存钮').addEventListener('click', () => {
+        if (!群) { 提示('群不存在'); return; }
+
+        const 名 = 群名输入.value.trim();
+        /* ★ 只改【本群】那一项，其它群不动 */
+        const 表 = 读JSON(群键, []);
+        if (!Array.isArray(表)) { 提示('群数据异常'); return; }
+
+        const i = 表.findIndex(g => g && String(g.id) === String(群ID));
+        if (i < 0) { 提示('群已不存在'); return; }
+
+        /* ★★ 先改【本页持有的那个群对象】，再整体替换回表里 ——
+             两处都改，否则 window.取群() 读到的还是旧值（测试和后续渲染会错）。 */
+        群.名称 = 名 || 默认群名();
+        群.我的昵称 = 我的昵称输入.value.trim();
+        群.公告 = 公告输入.value.trim();
+        /* ★ 清理掉已从群聊移除的成员：管理员名单里不能留着不在群的人 */
+        群.管理员 = Array.from(管理员集).filter(
+            id => 成员表.some(m => String((m && m.id) || '') === String(id))
+        );
+        群.成员 = 成员表;
+        表[i] = 群;
+        写JSON(群键, 表);
+
+        提示('已保存');
+        setTimeout(回上一页, 520);
+    });
+
+    /* ★ 清空聊天记录入口已按需求移除：清空统一走 7 页聊天界面顶栏那枚
+         （群聊 / 单聊都保留），群资料页不再重复放一个。 */
+
+    /* ============================================================
+     * 4. 返回：?from= → referrer → 7 页
+     * ============================================================ */
+    const 返回表 = {
+        '1': '1_shouyeyulan.html',
+        '4': '4_tongxun.html',
+        /* ★ 回 7 页时把「7 页原本的来源」续上（b=），否则 7 页只知道 from=7，
+             从 4 页进来的人改完资料会被退到 1 页 —— 返回链半路断了。
+             b 为空说明 7 页本来就是首站（来自 1 页），退回 from=7 即可。 */
+        '7': '7_liaotian.html?id=' + encodeURIComponent(群ID) + '&type=group'
+             + '&from=' + encodeURIComponent(上层来源 || '7')
+    };
+    function 推来源页() {
+        try {
+            const 名 = (document.referrer || '').split('/').pop().split('?')[0];
+            return /^\d+_.+\.html$/.test(名) ? 名 : '';
+        } catch (e) { return ''; }
+    }
+    const 返回页 = 返回表[来源] || 推来源页() || '1_shouyeyulan.html';
+    window.取返回页 = () => 返回页;
+
+    function 回上一页() {
+        try { window.最后跳转 = 返回页; } catch (e) {}
+        location.href = 返回页;
+    }
+    document.getElementById('返回按钮').addEventListener('click', 回上一页);
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') 回上一页(); });
+
+    /* ★ 测试观察口：让验证脚本能读到当前管理员集合与群数据 */
+    window.取管理员 = () => Array.from(管理员集);
+    window.取群 = () => 群;
+    </script>
+
+<script>
+/* ===== 主题背景：读全局设置（由 9_zhutishezhi.html 写入，全站共用）=====
+   ★ 群资料页【也要有】主题背景 —— 与 1~10 / 15 / 16 / 17 页同款，改请一起改。 */
+(function () {
+    var 图 = document.querySelector('.主题背景图片');
+    if (!图) return;
+    var 存 = null;
+    try { 存 = JSON.parse(localStorage.getItem('主题背景') || 'null'); } catch (e) {}
+    if (!存) return;
+
+    if (存.源 === '自定义' && 存.数据) { 图.src = 存.数据; return; }
+
+    if (存.源 === '默认' && typeof 存.索引 === 'number' && 存.索引 > 0) {
+        var 名 = '背景' + 存.索引;
+        var 候选 = ['png', 'jpg', 'jpeg', 'webp'], 序 = 0;
+        图.addEventListener('error', function () {
+            if (序 < 候选.length) 图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+        });
+        图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+    }
+})();
+</script>
+    <script id="全局音乐">
+/* =============================================================================
+ * 全局音乐.js —— 跨页续播（4 页开始播，切到任何界面都不中断）
+ *
+ * 【为什么需要它】
+ *   4_tongxun 有自己的完整 UI 播放器，但 HTML 页面之间是真跳转：
+ *   一离开 4 页，整个 JS 上下文连同 <audio> 一起被销毁，音乐就断了。
+ *   本脚本在每个页面挂一个「无界面的续播器」：进来先读存档，
+ *   如果上次是在播，就重建 audio、跳回原秒数、接着播。
+ *
+ * 【它不是什么】
+ *   不做 UI、不做播放列表 —— 那些是 4 页播放器的职责。
+ *   这里只负责「让声音不断」，回到 4 页时完整播放器会自然接手。
+ *
+ * 【契约（改这里前务必看）】
+ *   ① 存档键 '音乐播放状态'，格式必须与 4 页 保存状态() 完全一致：
+ *        { id, 名, 类型:'默认'|'上传', 时间:秒, 播放中:bool }
+ *      —— 两边都写、都读同一个键，才能无缝交接。
+ *   ② ★ 让位规则：页面里若存在 #音乐播放器（4 页的），本脚本【完全不启动】。
+ *      否则两个 audio 会同时出声。这是唯一的冲突防线，别删。
+ *   ③ 上传曲目在 IndexedDB：库名 '音乐库' / 表名 '音频'（与 4 页同名同结构）。
+ *
+ * 【让位 API（其它页面调用）】
+ *   window.全局音频.暂停('语音消息') / .恢复('语音消息')
+ *   window.全局音频.暂停('语音通话') / .恢复('语音通话')
+ *   7 页播语音条、14 页通话时分别调用，避免两路声音叠在一起。
+ *   ★ 用【原因集合】而非布尔：语音与通话可能重叠，布尔会在语音播完时
+ *     把仍在通话中的音乐放出来。全部原因解除才恢复。
+ *   ★ 会记住「占用前是否在播」，本来没放音乐就不会凭空启动。
+ *
+ * 【自动播放限制】
+ *   浏览器会拦「没有用户手势的自动播放」。被拦时不报错、不打断，
+ *   改为监听页面上第一次 pointerdown / touchstart 补播一次
+ *   —— 与 4 页 尝试续播() 同一个套路。
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    const 状态键 = '音乐播放状态';
+    const 目录候选 = ['1【音乐】/', '../1【音乐】/'];   // 与 4 页一致：html 挪进子文件夹时自动回退
+    const 库名 = '音乐库';
+    const 表名 = '音频';
+
+    /* ---------------------------------------------------------------
+     * IndexedDB：只为拿上传曲目的 blob，读不到就 null（调用方兜底）
+     * ------------------------------------------------------------- */
+    function 打开库() {
+        return new Promise((完成, 失败) => {
+            if (typeof indexedDB === 'undefined') return 失败(new Error('无 IndexedDB'));
+            let 请求;
+            try { 请求 = indexedDB.open(库名, 1); } catch (e) { return 失败(e); }
+            请求.onupgradeneeded = () => {
+                const db = 请求.result;
+                if (!db.objectStoreNames.contains(表名)) db.createObjectStore(表名, { keyPath: 'id' });
+            };
+            请求.onsuccess = () => 完成(请求.result);
+            请求.onerror = () => 失败(请求.error || new Error('打开失败'));
+        });
+    }
+
+    function 读一条(id) {
+        return 打开库().then(db => new Promise((完成, 失败) => {
+            const 事务 = db.transaction(表名, 'readonly');
+            const 请求 = 事务.objectStore(表名).get(id);
+            请求.onsuccess = () => 完成(请求.result || null);
+            请求.onerror = () => 失败(请求.error);
+        })).catch(() => null);
+    }
+
+    /* ---------------------------------------------------------------
+     * 存档读写
+     * ------------------------------------------------------------- */
+    function 读状态() {
+        try { return JSON.parse(localStorage.getItem(状态键) || 'null'); } catch (e) { return null; }
+    }
+
+    function 写状态(存) {
+        try { localStorage.setItem(状态键, JSON.stringify(存)); } catch (e) {}
+    }
+
+    /* ---------------------------------------------------------------
+     * 主体
+     * ------------------------------------------------------------- */
+    const 元素id = '全局音乐播放器';
+
+    /* =========================================================================
+     * ★ 占用管理：语音消息 / 语音通话 出声时，背景音乐让位
+     *
+     *   为什么用 Set 而不是布尔：两种占用可能重叠（比如播着语音条的同时来电话）。
+     *   布尔会在「语音播完恢复」时把仍在通话中的音乐也放出来。
+     *   记成「原因集合」，全部解除才恢复 —— 这是这类让位逻辑的正确写法。
+     *
+     *   另外要记住【占用前是否在播】：如果本来就没放音乐，
+     *   语音播完不该把音乐凭空启动。
+     * ======================================================================= */
+    const 占用 = new Set();
+    let 占用前在播 = false;
+    /* ★ 声明在 IIFE 顶层而不是 启动() 内：页尾探针 __全局音乐.补播中() 要访问它，
+         放在 启动() 里的话外层作用域取不到（TDZ / 未定义）。 */
+    let 补播中 = false;
+
+    /** 4 页让位时，操作目标是它自己的 #音乐播放器；否则是本脚本建的那个 */
+    function 取音频() {
+        return document.getElementById('音乐播放器') || document.getElementById(元素id);
+    }
+
+    const 全局音频 = {
+        /** 暂停背景音乐（可重入；同一原因重复调用无害） */
+        暂停(原因) {
+            const 键 = 原因 || '未命名';
+            if (占用.size === 0) {
+                const a = 取音频();
+                占用前在播 = !!a && !a.paused;
+            }
+            占用.add(键);
+            const a = 取音频();
+            if (a && !a.paused) { try { a.pause(); } catch (e) {} }
+        },
+
+        /** 解除某个占用；全部解除且占用前在播 → 恢复播放 */
+        恢复(原因) {
+            const 键 = 原因 || '未命名';
+            if (!占用.has(键)) return;
+            占用.delete(键);
+            if (占用.size > 0) return;              // 还有别的占用（比如仍在通话）
+            if (!占用前在播) return;                 // 本来就没在播 → 不凭空启动
+            const a = 取音频();
+            if (a && a.paused) {
+                const 试 = a.play();
+                if (试 && typeof 试.catch === 'function') 试.catch(() => {});
+            }
+        },
+
+        /** 强制清掉所有占用（异常路径兜底用） */
+        清除() { 占用.clear(); },
+
+        占用中() { return 占用.size > 0; },
+        占用表() { return Array.from(占用); },
+        是否在播() { const a = 取音频(); return !!a && !a.paused; },
+    };
+    /* ★ 无论让不让位都挂上：让位时它操作的是 4 页自己的播放器，
+       调用方（语音条 / 通话）不必关心自己在哪个页面。 */
+    window.全局音频 = 全局音频;
+
+    function 启动() {
+        /* ★★ 让位：4 页有完整播放器（#音乐播放器），这里绝不能再建第二个 audio。
+              注意 7 页那个是 #语音播放器（点语音消息用的），与本脚本无关，
+              各播各的，所以【只】认 #音乐播放器 这一个 id。 */
+        if (document.getElementById('音乐播放器')) return;
+        /* 防重：脚本万一被引了两次，也只建一个 audio */
+        if (document.getElementById(元素id)) return;
+
+        const 存 = 读状态();
+        // 没在播（或压根没播过）→ 安静退出，不建元素、不占资源
+        if (!存 || !存.播放中 || !存.名) return;
+
+        const 音频 = document.createElement('audio');
+        音频.id = 元素id;
+        音频.dataset.全局音乐 = '1';        // 便于排查 / 测试定位
+        音频.preload = 'metadata';
+        document.body.appendChild(音频);
+
+        const 目标 = Math.max(0, Number(存.时间) || 0);
+        let 已定位 = false;      // loadedmetadata 只处理一次（切目录会重复触发）
+        let 目录序 = 0;
+        let 上传链接 = '';
+
+        /* 跳回上次的秒数再播。★ 先 seek 后 play：
+           否则会从 0 开始，听感上像换了一首。 */
+        音频.addEventListener('loadedmetadata', () => {
+            if (已定位) return;
+            已定位 = true;
+            const 长 = isFinite(音频.duration) ? 音频.duration : 0;
+            try {
+                音频.currentTime = 长 > 0
+                    ? Math.min(目标, Math.max(0, 长 - 0.3))
+                    : 目标;
+            } catch (e) {}
+            续播();
+        });
+
+        /* 目录逐个试：与 4 页 载入当前目录() 同款（文件缺失 / 解码失败都能兜住） */
+        音频.addEventListener('error', () => {
+            if (目录序 < 目录候选.length) {
+                音频.src = encodeURI(目录候选[目录序++] + 存.名);
+            }
+        });
+
+        /* 播完了：不自动切歌（这里没有播放列表），停住并把状态改成「没在播」，
+           免得下一次进任意页面又从头播一遍。 */
+        音频.addEventListener('ended', () => {
+            写状态({ id: 存.id, 名: 存.名, 类型: 存.类型, 时间: 0, 播放中: false });
+        });
+
+        /* ---- 进度回写：下一页（或回到 4 页）要靠它续上 ---- */
+        function 存一次(播放中) {
+            写状态({
+                id: 存.id, 名: 存.名, 类型: 存.类型,
+                时间: 音频.currentTime || 0,
+                /* ★ 同 4 页那个坑：只认真正的布尔。pagehide / beforeunload
+                     的监听器会把 Event 对象当第一个参数传进来，
+                     `播放中 === undefined` 拦不住它 → `!!Event` = true。 */
+                播放中: typeof 播放中 !== 'boolean' ? !音频.paused : 播放中,
+            });
+        }
+        // 播着的时候每秒存一次，中途崩溃 / 强杀也不会丢太多
+        setInterval(() => { if (!音频.paused) 存一次(true); }, 1000);
+        // 离开页面再存一次：跳转、切后台、关闭三种情况都覆盖
+        const 存一次同步 = () => 存一次();
+        window.addEventListener('pagehide', 存一次同步);
+        window.addEventListener('beforeunload', 存一次同步);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') 存一次同步();
+        });
+
+        /* ------------------------------------------------------------
+         * 补播：浏览器会拦「没有用户手势」的自动播放，这是硬限制，绕不过去。
+         *   策略：
+         *     ① 直接播；
+         *     ② 被拒 → 【持续】监听用户交互，直到真的播起来才撤监听；
+         *     ③ 期间挂一个可见小条，告诉用户「点一下继续」。
+         *   ★★ 关键：不能用 once:true。那一次点击可能仍被拒（或音频还没
+         *      ready），失败后就再也没机会了 —— 表现正是「切过去没声音」。
+         *      必须【成功才停】，这是这段里最要紧的一句。
+         * ---------------------------------------------------------- */
+        const 事件名 = ['pointerdown', 'touchstart', 'click', 'keydown'];
+
+        function 撤补播() {
+            if (!补播中) return;
+            补播中 = false;
+            事件名.forEach(n => document.removeEventListener(n, 试补播, true));
+            document.removeEventListener('visibilitychange', 见可见);
+            收提示();
+        }
+
+        function 见可见() {
+            if (document.visibilityState === 'visible') 试补播();
+        }
+
+        function 试补播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();                     // 老浏览器无 Promise：当成功处理
+        }
+
+        /** 被拦 → 挂持续监听 + 显示提示条 */
+        function 展提示() {
+            if (!补播中) {
+                补播中 = true;
+                /* ★ 捕获阶段：冒泡阶段可能被页面自己的 stopPropagation 吃掉 */
+                事件名.forEach(n => document.addEventListener(n, 试补播, true));
+                document.addEventListener('visibilitychange', 见可见);
+            }
+            亮提示();
+        }
+
+        /* ---- 提示条：自建，不依赖各页自己的 toast 实现（各页不统一）---- */
+        let 提示元素 = null;
+        function 亮提示() {
+            if (提示元素) return;
+            const 条 = document.createElement('div');
+            条.id = '全局音乐提示';
+            条.textContent = '♪ 音乐已就绪，点一下继续播放';
+            // 样式全内联 + !important：各页 CSS 互不统一，不这样会被盖掉 / 变形
+            条.setAttribute('style', [
+                'position:fixed', 'left:50%', 'bottom:16px', 'transform:translateX(-50%)',
+                'z-index:99999', 'padding:8px 14px', 'border-radius:999px',
+                'background:rgba(28,28,32,0.86)', 'color:#fff', 'font-size:12px',
+                'letter-spacing:.3px', 'pointer-events:none',
+                'box-shadow:0 4px 16px rgba(0,0,0,.2)',
+                'transition:opacity .25s', 'opacity:0',
+                'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif',
+            ].join('!important;') + '!important');
+            document.body.appendChild(条);
+            提示元素 = 条;
+            setTimeout(() => { if (提示元素) 提示元素.style.opacity = '1'; }, 20);
+            setTimeout(收提示, 8000);           // 8 秒后自动收，别一直杵着
+        }
+        function 收提示() {
+            if (!提示元素) return;
+            const 条 = 提示元素;
+            提示元素 = null;
+            条.style.opacity = '0';
+            setTimeout(() => { if (条.parentNode) 条.parentNode.removeChild(条); }, 300);
+        }
+
+        function 续播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { 展提示(); return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();
+        }
+
+        // 播起来了就收掉提示（例如用户从别处触发了播放）
+        音频.addEventListener('play', 撤补播);
+
+        /* ---- 载入：上传曲目走 blob URL，其余按目录拼路径 ---- */
+        function 载入默认() {
+            目录序 = 0;
+            音频.src = encodeURI(目录候选[目录序++] + 存.名);
+        }
+
+        if (存.类型 === '上传' && 存.id) {
+            读一条(存.id).then(记录 => {
+                if (记录 && 记录.数据) {
+                    try {
+                        上传链接 = URL.createObjectURL(记录.数据);
+                        音频.src = 上传链接;
+                        return;
+                    } catch (e) {}
+                }
+                载入默认();          // 读不到（库被清了）→ 退回按名字找文件
+            });
+        } else {
+            载入默认();
+        }
+    }
+
+    /* DOM 就绪再跑：4 页的 #音乐播放器 也在 body 里，早了会误判成「没有」
+       → 两个 audio 同时出声。 */
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    // 测试 / 调试用：暴露一个只读探针，验证脚本确实起来了
+    window.__全局音乐 = {
+        键: 状态键,
+        元素id: 元素id,
+        让位条件: () => !!document.getElementById('音乐播放器'),
+        占用: 全局音频.占用表,
+        补播中: () => 补播中,
+    };
+})();
+    </script>
+    <script id="软键盘适配">
+/* =============================================================================
+ * 软键盘适配.js —— 让输入框在手机输入法弹出时始终可见
+ *
+ * 【要解决什么】
+ *   全站每个页面都是「100dvh 的固定容器 + 中间滚动区 + 底部固定区」的结构：
+ *       .手机主题背景容器 { height: 100dvh; overflow: hidden; display:flex; column }
+ *         ├── .顶部固定区      (flex-shrink: 0)
+ *         ├── .手机界面内容    (flex: 1; overflow-y: auto)  ← 唯一滚动区
+ *         └── .底部输入区      (flex-shrink: 0)
+ *   容器高度被 100dvh 硬锁死，所以输入法一弹出：
+ *     · iOS Safari：layout viewport 不变，visual viewport 被键盘吃掉一块，
+ *       容器高度纹丝不动 → 底部输入区整个被键盘盖住。
+ *     · Android Chrome（resize 模式）：innerHeight 会变小，dvh 跟着变，
+ *       容器自动变矮 → 但只在部分浏览器成立，换一家就打回原形。
+ *   同一套代码在两家表现不一样，正是这次要抹平的东西。
+ *
+ * 【核心思路：只信 visualViewport】
+ *   键盘高度 = 基准布局高 − visualViewport.height − visualViewport.offsetTop
+ *   然后把容器高度直接设成 visualViewport.height，并整体平移 offsetTop。
+ *   —— 不猜机型、不猜浏览器，只认「当前真正能看见的这块矩形」，
+ *      所以 iOS / Android / 各家输入法走的都是同一条代码路径。
+ *
+ *   ★ 基准布局高不是实时的 window.innerHeight —— 这是最容易写错的一处。
+ *     Android 键盘弹出时 innerHeight 本身就会变小，拿实时 innerHeight 去减
+ *     visualViewport.height 会得到 0，等于永远检测不到键盘（典型的「安卓没效果」）。
+ *     基准只在「确认键盘收起」时更新，弹出期间冻结。
+ *
+ * 【两件事一起做，缺一个都会漏】
+ *   ① 容器自适应：解决「底部常驻输入区被盖」（7 页的 .底部输入区）
+ *   ② 焦点滚入可视：解决「滚动区里的输入框被盖」（2 / 11 / 19~22 页的表单）
+ *
+ * 【四条硬约束（需求点，改动时别破）】
+ *   ① 不抖动：高度变化 ≤ 2px 不写样式；所有写入合并进一帧 rAF；
+ *              键盘判定阈值 80px，避开地址栏收起、工具栏隐藏这类假信号。
+ *   ② 不丢焦点：全程不 blur、不重建 DOM、不动 tabindex、不改 DOM 顺序。
+ *   ③ 不整页滚：绝不用 window.scrollTo 做补偿 —— 那会让 iOS 整个 layout
+ *      viewport 上移，顶部被切掉且松手后弹不回来。只改容器高度与
+ *      「最近的可滚动祖先」的 scrollTop。
+ *   ④ 不硬编码机型：没有 User-Agent 判断，没有 iOS / Android 分支。
+ *
+ * 【降级】
+ *   没有 visualViewport（老浏览器）→ 退回 window.resize + innerHeight 比对。
+ *   再不行 → 什么都不做，恢复成页面原本的样子（不会更糟）。
+ *
+ * 【对外 API（业务与测试用）】
+ *   window.软键盘.是否弹出()   → bool
+ *   window.软键盘.键盘高度()   → 像素
+ *   window.软键盘.校准()       → 立刻重算一次（比如弹窗关闭后）
+ *   window.软键盘.让位(px)     → 声明额外的底部占用（如自定义输入条），
+ *                                容器会再让出这么多高度
+ *   window.软键盘._喂(...)     → 测试用：直接喂一个可视区矩形
+ *
+ * ★★ 本文件是唯一源。改完跑：python3 同步软键盘.py
+ *     （与 全局音乐.js / 音频助手.js 同一套内联同步机制）
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    /* ------------------------------------------------------------------
+     * 常量
+     * ---------------------------------------------------------------- */
+    const 容器类名 = '手机主题背景容器';
+    const 弹出阈值 = 80;      // 键盘高度超过它才认定「键盘弹出了」
+    const 变化阈值 = 2;       // 高度变化不超过它就不写样式，省掉无意义的重排
+    const 底部余量 = 14;      // 焦点元素与可视区底部之间留的呼吸位
+    const 顶部余量 = 8;
+    const 类名键已弹 = '软键盘已弹出';
+    const 样式id = '软键盘适配样式';
+
+    const vv = (typeof window.visualViewport === 'object' && window.visualViewport)
+        ? window.visualViewport : null;
+
+    /* ------------------------------------------------------------------
+     * 状态
+     * ---------------------------------------------------------------- */
+    let 容器 = null;
+    let 基准高 = 0;           // 「键盘收起时」的布局高度，弹出期间冻结
+    let 已弹出 = false;
+    let 上次可视高 = 0;
+    let 上次偏移 = 0;
+    let 帧 = 0;               // rAF 句柄，用于合并
+    let 额外让位 = 0;         // window.软键盘.让位() 设进来的额外高度
+    let 焦点 = null;          // 最近一次聚焦的输入元素
+
+    /* ------------------------------------------------------------------
+     * 小工具
+     * ---------------------------------------------------------------- */
+    function 是输入框(el) {
+        if (!el || !el.tagName) return false;
+        const 标签 = el.tagName.toLowerCase();
+        return 标签 === 'input' || 标签 === 'textarea'
+            || (标签 === 'div' && el.isContentEditable === true);
+    }
+
+    /** 找容器：优先类名（全站统一），退化到 body 的唯一直接子元素 */
+    function 找容器() {
+        if (容器 && 容器.isConnected) return 容器;
+        容器 = document.querySelector('.' + 容器类名) || null;
+        return 容器;
+    }
+
+    function 可视顶() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+    function 可视底() {
+        if (vv) return (vv.offsetTop || 0) + vv.height;
+        return (window.scrollY || 0) + window.innerHeight;
+    }
+    function 当前可视高() { return vv ? vv.height : window.innerHeight; }
+    function 当前偏移() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+
+    /* ------------------------------------------------------------------
+     * 注入样式：只在键盘弹出时生效，收起即移除，不留残余
+     * ---------------------------------------------------------------- */
+    function 装样式() {
+        if (document.getElementById(样式id)) return;
+        const 样式 = document.createElement('style');
+        样式.id = 样式id;
+        /* ★ 用 class 而不是内联 style：收起时摘掉 class 就能还原，
+             不用逐个记住页面原本的 align-items / padding 是多少。 */
+        样式.textContent =
+            'html.' + 类名键已弹 + ' body{align-items:flex-start !important;}\n' +
+            'html.' + 类名键已弹 + ' .' + 容器类名 + '{padding-bottom:0 !important;}\n';
+        (document.head || document.documentElement).appendChild(样式);
+    }
+
+    /* ------------------------------------------------------------------
+     * 核心：把容器压到「真正看得见」的那块矩形里
+     * ---------------------------------------------------------------- */
+    function 应用() {
+        const 盒 = 找容器();
+        if (!盒) return;
+
+        const 可视高 = 当前可视高();
+        const 偏移 = 当前偏移();
+
+        if (!基准高) 基准高 = window.innerHeight || 可视高;
+
+        /* ★★ 键盘高度：基准 − 可视高 − 偏移。
+              基准在弹出期间冻结，所以 Android 那种「innerHeight 自己也会缩」
+              的情况同样算得出来。 */
+        let 键盘 = 基准高 - 可视高 - 偏移;
+        if (键盘 < 0) 键盘 = 0;
+
+        const 弹出 = 键盘 > 弹出阈值;
+
+        /* 状态没变、且可视高几乎没动 → 什么都不做（防抖动的第①道闸） */
+        if (弹出 === 已弹出
+            && Math.abs(可视高 - 上次可视高) <= 变化阈值
+            && Math.abs(偏移 - 上次偏移) <= 变化阈值) {
+            if (弹出) 校准焦点();
+            return;
+        }
+
+        上次可视高 = 可视高;
+        上次偏移 = 偏移;
+        已弹出 = 弹出;
+
+        const 根 = document.documentElement;
+        const 体 = document.body;
+
+        if (弹出) {
+            装样式();
+            if (!根.classList.contains(类名键已弹)) 根.classList.add(类名键已弹);
+
+            /* 容器高度 = 真正看得见的高度（再减去业务声明的额外让位） */
+            const 目标高 = Math.max(120, 可视高 - 额外让位);
+            盒.style.height = 目标高 + 'px';
+            盒.style.minHeight = 目标高 + 'px';
+            /* 跟着 visualViewport 的偏移走（iOS 页面被上推时靠它归位） */
+            盒.style.transform = (偏移 ? 'translateY(' + 偏移 + 'px)' : '');
+
+            /* ③ 不整页滚：只在系统确实把 layout viewport 推走时温和拉回原点。
+                 阈值 4px 是为了不跟正常的 1~2px 抖动打架。 */
+            if (!vv && (window.pageYOffset || 0) > 4 && 体) {
+                const 体溢出 = window.getComputedStyle(体).overflow;
+                if (体溢出 === 'hidden' || 体溢出 === 'clip') window.scrollTo(0, 0);
+            }
+        } else {
+            /* 收起：摘 class、清掉所有内联改动，回到页面原本的样子 */
+            if (根.classList.contains(类名键已弹)) 根.classList.remove(类名键已弹);
+            盒.style.height = '';
+            盒.style.minHeight = '';
+            盒.style.transform = '';
+            /* 收起时基准可以放心更新 —— 此刻量到的就是「无键盘」的真实高度 */
+            基准高 = window.innerHeight || 可视高;
+        }
+
+        /* 容器变矮之后滚动区也变矮，焦点元素可能又落到可视区外 → 再校准一次 */
+        校准焦点();
+    }
+
+    /** 合并到下一帧，避免 resize 连发时反复读写布局 */
+    function 排一帧() {
+        if (帧) return;
+        const 跑 = window.requestAnimationFrame
+            || function (f) { return setTimeout(f, 16); };
+        帧 = 跑(function () { 帧 = 0; 应用(); });
+    }
+
+    /* ------------------------------------------------------------------
+     * ② 焦点滚入可视
+     * ---------------------------------------------------------------- */
+    /** 向上找最近一个「真的能滚」的祖先 */
+    function 找滚动祖先(el) {
+        let n = el ? el.parentElement : null;
+        while (n && n !== document.body && n !== document.documentElement) {
+            const 样式 = window.getComputedStyle(n);
+            const 可滚 = /(auto|scroll|overlay)/.test(样式.overflowY || '');
+            if (可滚 && n.scrollHeight > n.clientHeight + 1) return n;
+            n = n.parentElement;
+        }
+        return null;
+    }
+
+    /**
+     * 把焦点元素挪进可视区。
+     * ★ 只动「最近滚动祖先」的 scrollTop —— 不动 window，避免整页位移。
+     * ★ 元素本来就在可视区里时什么都不做，不会没事乱滚。
+     */
+    function 校准焦点() {
+        const el = 焦点 || document.activeElement;
+        if (!是输入框(el)) return;
+        if (!找容器()) return;
+
+        const 矩形 = el.getBoundingClientRect();
+        if (!矩形.height && !矩形.top) return;      // 还没布局完，跳过
+
+        const 下界 = 可视底() - 底部余量;
+        const 上界 = 可视顶() + 顶部余量;
+
+        let 差 = 0;
+        if (矩形.bottom > 下界) 差 = 矩形.bottom - 下界;
+        else if (矩形.top < 上界) 差 = 矩形.top - 上界;
+
+        if (Math.abs(差) <= 1) return;
+
+        const 滚动父 = 找滚动祖先(el);
+        /* 不在任何滚动区里（比如底部常驻输入区）：容器已经跟着可视区收缩了，
+           理论上不该再超出。真超了也不碰 window —— 那才是抖动的根源。 */
+        if (滚动父) 滚动父.scrollTop += 差;
+    }
+
+    /* ------------------------------------------------------------------
+     * 事件
+     * ---------------------------------------------------------------- */
+    function 起监听() {
+        /* ① visualViewport：键盘弹出 / 收起 / 页面被上推 都走这里，逐帧跟随 */
+        if (vv) {
+            vv.addEventListener('resize', 排一帧);
+            vv.addEventListener('scroll', function () {
+                /* iOS 键盘弹出时若系统把 layout viewport 推走，offsetTop 会变，
+                   这里同步一下容器位置，避免顶部被切掉。 */
+                if (已弹出) 排一帧();
+            });
+        }
+
+        /* ② 降级：没有 visualViewport 的老浏览器，靠 window.resize */
+        window.addEventListener('resize', 排一帧);
+
+        /* ③ 方向变化：横竖屏切换后基准要重测 */
+        window.addEventListener('orientationchange', function () {
+            基准高 = 0;
+            setTimeout(排一帧, 120);
+        });
+
+        /* ④ 聚焦：记下元素并立刻校准一次。
+             键盘弹出是异步动画（iOS 约 250ms），所以这里先做一次「预防性」校准，
+             随后 visualViewport.resize 每帧触发时会继续跟着校准到最终位置。 */
+        document.addEventListener('focusin', function (e) {
+            if (!是输入框(e.target)) return;
+            焦点 = e.target;
+            /* 先测一次基准：此刻键盘还没弹，量到的正是无键盘高度 */
+            if (!已弹出) 基准高 = window.innerHeight || 当前可视高();
+            setTimeout(排一帧, 30);
+        }, true);
+
+        /* ⑤ 失焦：键盘收起由 resize 兜底，这里只清记录、不主动改布局
+              —— 切到下一个输入框时 focusin 会立刻接手，不会闪。 */
+        document.addEventListener('focusout', function (e) {
+            if (焦点 === e.target) 焦点 = null;
+        }, true);
+
+        /* ⑥ 切后台回来：尺寸可能已经变了 */
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) { 基准高 = 0; 排一帧(); }
+        });
+    }
+
+    /* ------------------------------------------------------------------
+     * 启动
+     * ---------------------------------------------------------------- */
+    function 启动() {
+        找容器();
+        基准高 = window.innerHeight || 当前可视高();
+        上次可视高 = 当前可视高();
+        上次偏移 = 当前偏移();
+        起监听();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    /* ------------------------------------------------------------------
+     * 对外 API
+     * ---------------------------------------------------------------- */
+    window.软键盘 = {
+        是否弹出: function () { return 已弹出; },
+        键盘高度: function () {
+            return Math.max(0, 基准高 - 当前可视高() - 当前偏移());
+        },
+        校准: 排一帧,
+        /** 业务声明额外的底部占用（例如自定义输入条），容器再让出这么多 */
+        让位: function (px) {
+            额外让位 = Math.max(0, Number(px) || 0);
+            排一帧();
+        },
+        /**
+         * 测试用：直接喂一个「可视区矩形」，跳过真实环境探测。
+         *   _喂(可视高, 偏移, 布局高)
+         * · 有 visualViewport：改它的 height / offsetTop
+         * · 没有（降级路径）：改 window.innerHeight
+         * 两种都是测试替身走的同一条代码路径，所以断言对真机同样成立。
+         */
+        _喂: function (可视高, 偏移, 布局高) {
+            if (typeof 布局高 === 'number' && 布局高 > 0) 基准高 = 布局高;
+            上次可视高 = -999;                 // 强制通过变化阈值，保证一定重算
+            if (vv) {
+                try {
+                    vv.height = 可视高;
+                    vv.offsetTop = 偏移 || 0;
+                } catch (e) {
+                    Object.defineProperty(vv, 'height', { value: 可视高, configurable: true });
+                    Object.defineProperty(vv, 'offsetTop', { value: 偏移 || 0, configurable: true });
+                }
+            } else {
+                try { window.innerHeight = 可视高; } catch (e) {
+                    Object.defineProperty(window, 'innerHeight',
+                        { value: 可视高, configurable: true, writable: true });
+                }
+            }
+            应用();
+            return true;
+        },
+        /** 测试用：当前容器被压到的高度（内联样式里的值，未设置则空串） */
+        _容器高: function () {
+            const 盒 = 找容器();
+            return 盒 ? (盒.style.height || '') : null;
+        },
+    };
+})();
+    </script>
+</body>
+</html>

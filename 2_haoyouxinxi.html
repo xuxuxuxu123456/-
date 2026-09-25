@@ -1,0 +1,2569 @@
+<!DOCTYPE html>
+<!--
+    2_haoyouxinxi —— 好友信息填写 / 编辑页（ID 分桶版）。
+    入口：
+      ① 4_tongxun 通讯录「好友信息」→ 带 ?id=<联系人id>&mode=edit，载入已有数据
+      ② 首页/通讯录加号「添加好友」→ 带 ?mode=new，空白草稿
+      ③ 直接打开（无参数）→ 兼容旧行为，等同 mode=new
+
+    数据架构（与 1 / 3 / 4 协同）：
+      • 全局索引表「联系人索引」= [{ id, 名称, 备注, 头像, 消息, 时间 }, ...]
+        —— 1 页会话列表、4 页通讯录均读此表（缺省时用旧「会话列表」迁移一次）
+      • 详情按 id 分桶：
+          「好友信息_<id>」  → 完整表单对象（含 音色 字段）
+          「好友头像_<id>」  → 头像 dataURL
+      • 音色配置按 id 分桶：「音色配置_<id>」（键名兼容旧全局键「音色配置」）
+      • 保存时：若 mode=new → 生成 id、追加进「联系人索引」；edit → 就地更新索引
+      • 昵称/头像/备注 的改动「以详情为准」同步回写索引表，1/4 页自动跟上
+
+    返回：★ 从哪进来就回哪去 —— ?from=<页号> 优先，其次 document.referrer，
+          都没有才退回 4_tongxun.html（通讯录）。
+-->
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>好友信息</title>
+    <style>
+        /* ===== 统一色板（与 1_shouyeyulan.html 完全一致） ===== */
+        :root {
+            --ink: #333336;
+            --ink-2: #55555a;
+            --ink-3: #7a7a80;
+            --ink-4: #a4a4aa;
+            --accent: #4a4a50;
+            --accent-soft: #d5d5d9;
+            --accent-hi: #e6e6ea;
+            --accent-ink: #35353b;
+            --panel: 255, 255, 255;
+            --line: 158, 158, 162;
+            --shade: 48, 48, 54;
+            --glass: 0.5;
+
+            /* ★ rgb 伴生变量：hex 变量【不能】直接进 rgba()（整条声明会被静默丢弃），
+               要带透明度时必须用这批数值三元组。与 1 / 4 / 7 / 8 / 9 页同一套。 */
+            --ink-rgb: 51, 51, 54;
+            --ink-2-rgb: 85, 85, 90;
+            --ink-3-rgb: 122, 122, 128;
+            --ink-4-rgb: 164, 164, 170;
+            --accent-rgb: 74, 74, 80;
+            --accent-soft-rgb: 213, 213, 217;
+            --accent-hi-rgb: 230, 230, 234;
+            --accent-ink-rgb: 53, 53, 59;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { overflow-x: hidden; touch-action: pan-y; }
+        body {
+            background-color: #dadae0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--ink);
+            display: flex; justify-content: center; align-items: flex-start;
+            min-height: 100dvh; overflow-x: hidden; touch-action: pan-y;
+        }
+
+        .手机主题背景容器 {
+            width: 100%; max-width: 430px; height: 100dvh; min-height: 100dvh;
+            position: relative; background-color: transparent; overflow: hidden; overflow-x: hidden;
+            box-shadow: 0 0 20px rgba(var(--shade), 0.16);
+            display: flex; flex-direction: column; touch-action: pan-y;
+            padding-top: env(safe-area-inset-top, 0px);
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+            padding-left: env(safe-area-inset-left, 0px);
+            padding-right: env(safe-area-inset-right, 0px);
+            -webkit-overflow-scrolling: touch;
+        }
+        @media (max-width: 430px) { .手机主题背景容器 { box-shadow: none; } }
+
+        .主题背景图片 {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; z-index: 0; pointer-events: none;
+        }
+        .全局白色遮罩 {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(var(--panel), 0.4); z-index: 1; pointer-events: none;
+        }
+
+        /* ===== 顶部固定区 ===== */
+        .顶部固定区 {
+            position: relative; z-index: 10; background: rgba(var(--panel), 0.5);
+            flex-shrink: 0; padding-bottom: clamp(8px, 2.5vw, 12px);
+        }
+        .顶部导航栏 {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: clamp(10px, 3vw, 14px) clamp(12px, 4vw, 16px) clamp(6px, 2vw, 8px);
+            font-size: clamp(12px, 3.5vw, 14px); color: var(--ink-2); position: relative;
+        }
+        .返回按钮 {
+            cursor: pointer; width: clamp(24px, 7vw, 28px); height: clamp(24px, 7vw, 28px);
+            display: flex; justify-content: center; align-items: center; border-radius: 50%;
+        }
+        .返回按钮 svg {
+            width: clamp(18px, 5vw, 22px); height: clamp(18px, 5vw, 22px);
+            fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2;
+        }
+        .中间标题 { font-size: clamp(16px, 4.5vw, 18px); font-weight: 600; color: var(--ink); }
+        .保存按钮 {
+            cursor: pointer; padding: clamp(4px, 1.5vw, 6px) clamp(10px, 3vw, 14px);
+            border-radius: 20px; background: rgba(var(--panel), 0.5);
+            border: 1px solid rgba(var(--panel), 0.2);
+            font-size: clamp(12px, 3.5vw, 14px); font-weight: 500; color: var(--ink-2);
+        }
+
+        /* ===== 中间滚动区 ===== */
+        .手机界面内容 {
+            flex: 1; overflow-y: auto; overflow-x: hidden;
+            overscroll-behavior-x: none; overscroll-behavior-y: contain;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: clamp(16px, 5vw, 20px);
+            position: relative; z-index: 2; background: rgba(var(--panel), 0.04); touch-action: pan-y;
+        }
+
+        /* ===== 头像 + 信息 合并行 ===== */
+        .头像信息行 {
+            display: flex; align-items: stretch; gap: clamp(12px, 3.5vw, 16px);
+            padding: clamp(14px, 4vw, 18px) clamp(14px, 4.5vw, 18px) clamp(10px, 3vw, 14px);
+            margin: clamp(8px, 2.5vw, 12px) clamp(14px, 4.5vw, 18px);
+            background: rgba(var(--panel), 0.5); border-radius: 18px;
+            box-shadow: 0 8px 32px rgba(var(--shade), 0.04), inset 0 0 0 1px rgba(var(--panel), 0.12);
+            overflow-x: hidden;
+        }
+        .头像左侧 {
+            flex-shrink: 0; display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+        }
+        .头像上传框 {
+            position: relative; width: clamp(64px, 18vw, 80px); height: clamp(64px, 18vw, 80px);
+            border-radius: 50%; background: rgba(var(--panel), 0.5);
+            border: 2px dashed rgba(var(--panel), 0.2);
+            box-shadow: 0 8px 32px rgba(var(--shade), 0.06), inset 0 0 0 1px rgba(var(--panel), 0.12);
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; overflow: hidden;
+        }
+        .头像上传框 img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: none; }
+        .头像上传框.has-image img { display: block; }
+        .头像上传框.has-image .头像占位内容 { display: none; }
+        .头像占位内容 {
+            display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--ink-3);
+        }
+        .头像相机图标 {
+            width: clamp(18px, 5vw, 24px); height: clamp(18px, 5vw, 24px);
+            fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5;
+        }
+        .头像提示文字 { font-size: clamp(8px, 2vw, 9px); color: var(--ink-4); margin-top: 2px; }
+
+        .信息右侧 { flex: 1; min-width: 0; width: 100%; display: flex; flex-direction: column; gap: clamp(6px, 1.8vw, 10px); justify-content: center; }
+        .昵称行 { display: flex; align-items: center; gap: clamp(6px, 2vw, 10px); }
+        .昵称行 .表单标签 { flex-shrink: 0; font-size: clamp(12px, 3.2vw, 13px); font-weight: 500; color: var(--ink-2); }
+        .昵称行 .表单输入 {
+            flex: 1; padding: clamp(4px, 1.2vw, 6px) clamp(8px, 2.5vw, 10px);
+            border-radius: 10px; border: 1px solid rgba(var(--panel), 0.15);
+            background: rgba(var(--panel), 0.5); font-size: clamp(13px, 3.5vw, 14px);
+            color: var(--ink-2); outline: none; font-family: inherit;
+        }
+        .昵称行 .表单输入:focus { border-color: rgba(var(--line), 0.6); background: rgba(var(--panel), 0.1); box-shadow: 0 0 0 3px rgba(var(--line), 0.1); }
+        .昵称行 .表单输入::placeholder { color: var(--ink-4); }
+
+        .基础信息迷你网格 { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(4px, 1.2vw, 8px); width: 100%; }
+        .迷你信息项 { display: flex; align-items: center; gap: clamp(4px, 1.2vw, 8px); min-width: 0; overflow-x: hidden; }
+        .迷你信息项.性别项 { grid-column: 1 / -1; }
+        .迷你信息项 .迷你标签 { font-size: clamp(9px, 2.5vw, 10px); font-weight: 500; color: var(--ink-3); flex-shrink: 0; letter-spacing: 0.5px; }
+        .迷你信息项 .迷你输入 {
+            flex: 1; min-width: 0; width: 0; padding: clamp(3px, 1vw, 5px) clamp(6px, 1.8vw, 8px);
+            border-radius: 8px; border: 1px solid rgba(var(--panel), 0.15);
+            background: rgba(var(--panel), 0.5); font-size: clamp(11px, 3vw, 12px);
+            color: var(--ink-2); outline: none; font-family: inherit;
+        }
+        .迷你信息项 .迷你输入:focus { border-color: rgba(var(--line), 0.5); background: rgba(var(--panel), 0.1); box-shadow: 0 0 0 3px rgba(var(--line), 0.08); }
+        .迷你信息项 .迷你输入::placeholder { color: var(--ink-4); }
+
+        .迷你信息项 .迷你输入[type="date"] { padding-right: 6px; cursor: pointer; }
+        .迷你信息项 .迷你输入[type="date"]::-webkit-calendar-picker-indicator { opacity: 0; width: 20px; height: 20px; cursor: pointer; position: absolute; right: 6px; top: 50%; transform: translateY(-50%); }
+        .迷你信息项:has(> input[type="date"]) { position: relative; }
+        .迷你信息项:has(> input[type="date"]) .迷你标签 { font-size: clamp(10px, 2.8vw, 12px); }
+        .迷你信息项:has(> input[type="date"]) .迷你输入 { font-size: clamp(11px, 3vw, 13px); padding-right: 28px; }
+        .生日日历图标 {
+            position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+            width: 16px; height: 16px; fill: none; stroke: rgba(var(--line), 0.5);
+            stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; pointer-events: none;
+        }
+        .迷你信息项:has(> input[type="date"]:focus) .生日日历图标 { stroke: rgba(var(--line), 0.8); }
+        .迷你信息项.生日项 { grid-column: 1 / -1; }
+        .迷你信息项 .生日输入显示 { cursor: pointer; }
+
+        /* ===== 自定义日历弹窗 ===== */
+        .日历弹窗遮罩 {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(16, 16, 24, 0.5); z-index: 9999;
+            display: none; justify-content: center; align-items: center; opacity: 0; padding: 20px;
+        }
+        .日历弹窗遮罩.显示 { display: flex; opacity: 1; }
+        .日历弹窗 {
+            background: rgba(var(--panel), 0.9); border-radius: 24px;
+            padding: clamp(16px, 4vw, 22px); width: clamp(280px, 90vw, 340px);
+            box-shadow: 0 20px 60px rgba(var(--shade), 0.2), inset 0 0 0 1px rgba(var(--panel), 0.3);
+            border: 1px solid rgba(var(--panel), 0.4); transform: scale(0.9) translateY(10px);
+        }
+        .日历弹窗遮罩.显示 .日历弹窗 { transform: scale(1) translateY(0); }
+        .日历头部 { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+        .日历导航按钮 {
+            width: 36px; height: 36px; border-radius: 50%; border: 1px solid rgba(var(--line), 0.3);
+            background: rgba(var(--panel), 0.5); color: var(--ink-2);
+            display: flex; align-items: center; justify-content: center; cursor: pointer;
+        }
+        .日历年月 { font-size: clamp(15px, 4vw, 17px); font-weight: 600; color: var(--ink); letter-spacing: 0.5px; }
+        .日历星期头 { display: grid; grid-template-columns: repeat(7, 1fr); margin-bottom: 8px; }
+        .日历星期 { text-align: center; font-size: 12px; font-weight: 500; color: var(--ink-3); padding: 4px 0; }
+        .日历网格 { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 16px; }
+        .日历日期 {
+            width: 100%; aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+            border-radius: 50%; font-size: clamp(13px, 3.5vw, 14px); color: var(--ink);
+            cursor: pointer; border: none; background: transparent; font-family: inherit; font-weight: 400;
+        }
+        .日历日期.今天 { color: var(--accent); font-weight: 500; }
+        .日历日期.选中 { background: var(--accent); color: #fff; font-weight: 600; box-shadow: 0 4px 12px rgba(var(--shade), 0.16); }
+        .日历日期.其他月 { color: var(--ink-4); }
+        .日历日期.其他月.选中 { color: #fff; }
+        .日历底部 { display: flex; justify-content: space-between; gap: 10px; }
+        .日历今日按钮 {
+            flex: 1; padding: 8px 16px; border-radius: 999px; border: 1px solid rgba(var(--line), 0.3);
+            background: rgba(var(--panel), 0.5); color: var(--ink-2); font-size: 13px; font-weight: 500;
+            cursor: pointer; font-family: inherit;
+        }
+        .日历确定按钮 {
+            flex: 1; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--accent);
+            background: var(--accent); color: #fff; font-size: 13px; font-weight: 500;
+            cursor: pointer; font-family: inherit;
+        }
+        .日历确定按钮:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* 性别迷你选择器 */
+        .性别迷你选择器 {
+            display: flex; gap: clamp(1px, 0.3vw, 3px); background: rgba(var(--panel), 0.5);
+            border-radius: 8px; border: 1px solid rgba(var(--panel), 0.1); padding: 2px;
+            width: 100%; max-width: 100%; min-width: 0; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+        }
+        .性别迷你选项 {
+            flex: 1; display: flex; align-items: center; justify-content: center; gap: clamp(1px, 0.3vw, 3px);
+            padding: clamp(1px, 0.4vw, 3px) clamp(2px, 0.6vw, 5px); border-radius: 6px;
+            font-size: clamp(9px, 2.2vw, 10px); color: var(--ink-3); cursor: pointer;
+            position: relative; overflow: hidden; white-space: nowrap; min-width: 0; flex-shrink: 1; width: 0;
+        }
+        .性别迷你选项::before { content: ''; position: absolute; inset: 0; background: rgba(var(--panel), 0.08); border-radius: 6px; opacity: 0; }
+        .性别迷你选项 input[type="radio"] { display: none; }
+        .性别迷你标记 { width: clamp(8px, 2.2vw, 10px); height: clamp(8px, 2.2vw, 10px); border-radius: 50%; border: 2px solid rgba(var(--line), 0.4); background: transparent; flex-shrink: 0; }
+        .性别迷你选项 input[type="radio"]:checked + .性别迷你标记 { background: rgba(var(--line), 0.6); border-color: rgba(var(--line), 0.6); }
+        .性别迷你选项:has(input[type="radio"]:checked) { color: var(--ink-2); font-weight: 500; }
+        .性别迷你文字 { white-space: nowrap; }
+
+        /* ===== 表单卡片 ===== */
+        .表单卡片 {
+            margin: clamp(8px, 2.5vw, 12px) clamp(14px, 4.5vw, 18px);
+            background: rgba(var(--panel), 0.5); border-radius: 18px;
+            padding: clamp(14px, 4vw, 18px);
+            box-shadow: 0 8px 32px rgba(var(--shade), 0.04), inset 0 0 0 1px rgba(var(--panel), 0.12);
+        }
+        .表单组 { margin-bottom: clamp(12px, 3.5vw, 16px); }
+        .表单组:last-child { margin-bottom: 0; }
+        .表单标签 { display: flex; align-items: center; gap: 6px; font-size: clamp(13px, 3.5vw, 14px); font-weight: 500; color: var(--ink-2); margin-bottom: clamp(6px, 2vw, 8px); }
+        .表单标签 svg { width: clamp(14px, 4vw, 16px); height: clamp(14px, 4vw, 16px); fill: none; stroke: var(--ink-3); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+        .表单输入 {
+            width: 100%; padding: clamp(8px, 2.5vw, 10px) clamp(12px, 3.5vw, 14px);
+            border-radius: 12px; border: 1px solid rgba(var(--panel), 0.15);
+            background: rgba(var(--panel), 0.5); font-size: clamp(13px, 3.5vw, 14px);
+            color: var(--ink-2); outline: none; font-family: inherit;
+        }
+        .表单输入:focus { border-color: rgba(var(--line), 0.6); background: rgba(var(--panel), 0.1); box-shadow: 0 0 0 3px rgba(var(--line), 0.1); }
+        .表单输入::placeholder { color: var(--ink-4); }
+        .表单文本域 { resize: vertical; min-height: clamp(60px, 18vw, 80px); line-height: 1.6; }
+        .分割线 { height: 1px; background: rgba(var(--panel), 0.5); margin: clamp(10px, 3vw, 14px) 0; }
+
+        /* ===== 性格标签 ===== */
+        .标签输入区 { display: flex; flex-wrap: wrap; gap: clamp(4px, 1.5vw, 6px); align-items: center; }
+        .标签 {
+            background: rgba(var(--panel), 0.5); padding: clamp(3px, 1vw, 4px) clamp(8px, 2.5vw, 10px);
+            border-radius: 999px; font-size: clamp(11px, 3vw, 12px); color: var(--ink-2);
+            display: inline-flex; align-items: center; gap: 4px; border: 1px solid rgba(var(--panel), 0.1);
+        }
+        .标签删除 { width: clamp(14px, 4vw, 16px); height: clamp(14px, 4vw, 16px); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--ink-4); cursor: pointer; }
+        .标签删除 svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+        .标签添加按钮 {
+            padding: clamp(3px, 1vw, 4px) clamp(8px, 2.5vw, 10px); border-radius: 999px;
+            border: 1.5px dashed rgba(var(--line), 0.5); background: rgba(var(--panel), 0.5);
+            color: var(--ink-4); font-size: clamp(11px, 3vw, 12px); cursor: pointer;
+            display: inline-flex; align-items: center; gap: 3px;
+        }
+        .标签添加按钮 svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+        .标签输入框 { flex: 1; min-width: 80px; padding: clamp(4px, 1.2vw, 5px) clamp(8px, 2.5vw, 10px); border-radius: 999px; border: 1px solid rgba(var(--panel), 0.15); background: rgba(var(--panel), 0.5); font-size: clamp(12px, 3.2vw, 13px); outline: none; color: var(--ink-2); }
+        .标签输入框:focus { border-color: rgba(var(--line), 0.6); background: rgba(var(--panel), 0.1); box-shadow: 0 0 0 3px rgba(var(--line), 0.1); }
+        .标签输入框::placeholder { color: var(--ink-4); }
+
+        /* ===== 人物属性 ===== */
+        .属性标签组 { display: flex; flex-wrap: nowrap; align-items: center; gap: clamp(3px, 0.8vw, 4px); overflow-x: auto; scrollbar-width: none; }
+        .属性标签组::-webkit-scrollbar { display: none; }
+        .属性标签 {
+            font-size: clamp(10px, 2.6vw, 12px); padding: clamp(3px, 0.8vw, 4px) clamp(5px, 1.4vw, 8px);
+            border-radius: 999px; color: var(--ink-3); background: rgba(var(--panel), 0.5);
+            border: 1px solid rgba(var(--panel), 0.15); cursor: pointer; user-select: none;
+            white-space: nowrap; flex-shrink: 1; line-height: 1.4;
+        }
+        .属性标签.选中 { background: rgba(var(--line), 0.25); border-color: rgba(var(--line), 0.5); color: var(--ink); font-weight: 500; box-shadow: 0 2px 8px rgba(var(--line), 0.12); }
+
+        /* ===== 音色配置 ===== */
+        .音色配置组 { cursor: pointer; }
+        .音色配置行 {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: clamp(8px, 2.5vw, 12px); padding: clamp(10px, 3vw, 14px) clamp(12px, 3.5vw, 16px);
+            border-radius: 14px; background: rgba(var(--panel), 0.5); border: 1px solid rgba(var(--panel), 0.15); min-width: 0;
+        }
+        .音色配置信息 { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+        .音色配置状态 { font-size: clamp(9px, 2.4vw, 10px); letter-spacing: 0.5px; color: var(--ink-4); font-weight: 500; }
+        .音色配置状态.已启用 { color: var(--accent); font-weight: 600; }
+        .音色配置名称 { font-size: clamp(12px, 3.4vw, 14px); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .音色配置箭头 { flex-shrink: 0; width: clamp(18px, 5vw, 22px); height: clamp(18px, 5vw, 22px); color: var(--ink-4); }
+        .音色配置箭头 svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+        /* ===== 裁剪弹窗 ===== */
+        .裁剪弹窗遮罩 {
+            position: fixed; inset: 0; z-index: 200; background: rgba(20, 20, 26, 0.92);
+            display: none; flex-direction: column; justify-content: center; align-items: center; padding: 20px;
+        }
+        .裁剪弹窗遮罩.显示 { display: flex; }
+        .裁剪视口 {
+            width: min(78vw, 300px); height: min(78vw, 300px); border-radius: 50%;
+            overflow: hidden; position: relative; touch-action: none; cursor: grab;
+            box-shadow: 0 0 0 2px rgba(255,255,255,0.5);
+        }
+        .裁剪视口.方形 { border-radius: 16px; }
+        /* transform-origin 必须是左上角：tx/ty 的居中公式按「左上角固定」推导，
+           若用默认的中心原点，大图会被推到取景框外 → 裁剪预览一片空白 */
+        .裁剪视口 img { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; pointer-events: none; }
+        .裁剪操作栏 { display: flex; gap: 16px; margin-top: 24px; }
+        .裁剪按钮 {
+            padding: 9px 26px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.12); color: #fff; font-size: 14px; cursor: pointer; font-family: inherit;
+        }
+        .裁剪按钮.确认 { background: var(--accent); border-color: var(--accent); }
+
+        /* ===== 视觉隐藏的文件输入 =====
+           移动端（尤其 Android WebView / 部分 iOS）对 display:none 的 <input type=file>
+           调用 .click() 无效 —— 元素已从渲染树移除，无法接收用户手势。
+           改用「仍在渲染树中但不可见」的标准写法，保证 click() 在所有浏览器都能唤起。 */
+        .视觉隐藏文件输入 {
+            position: absolute; width: 1px; height: 1px;
+            padding: 0; margin: -1px; overflow: hidden;
+            clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+            opacity: 0; pointer-events: none;
+        }
+
+        /* ===== 图片来源选择（拍摄 / 从手机相册选择 / 取消）=====
+           ★ 全站统一面板：1 / 2 / 6 / 8 / 9 / 10 / 11 页共用这套结构与文案。
+             改了这里，请把改动同步到其余六页（CSS 与 HTML 各一处）。 */
+        .来源遮罩 {
+            position: fixed; inset: 0; z-index: 300;
+            background: rgba(16, 16, 24, 0.45);
+            display: none; align-items: flex-end; justify-content: center;
+        }
+        .来源遮罩.显示 { display: flex; }
+        .来源面板 {
+            width: 100%; max-width: 430px;
+            padding: 0 clamp(8px, 2.4vw, 10px)
+                     calc(clamp(8px, 2.4vw, 10px) + env(safe-area-inset-bottom, 0px));
+            transform: translateY(100%);
+            transition: transform .26s cubic-bezier(.32, .72, 0, 1);
+        }
+        .来源遮罩.显示 .来源面板 { transform: translateY(0); }
+
+        .来源组 {
+            background: rgba(252, 252, 254, 0.98);
+            -webkit-backdrop-filter: blur(var(--blur));
+            backdrop-filter: blur(var(--blur));
+            border-radius: clamp(13px, 3.8vw, 15px);
+            overflow: hidden;
+        }
+        .来源项 {
+            display: flex;
+            align-items: center;
+            gap: clamp(10px, 3vw, 13px);
+            width: 100%;
+            padding: clamp(12px, 3.5vw, 15px) clamp(14px, 4vw, 17px);
+            border: none;
+            background: transparent;
+            font-family: inherit;
+            text-align: left;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+            transition: background .16s;
+        }
+        .来源项 + .来源项 { border-top: 1px solid rgba(var(--line), 0.15); }
+        .来源项:active { background: rgba(var(--line), 0.09); }
+        .来源项 svg {
+            width: clamp(17px, 4.8vw, 19px);
+            height: clamp(17px, 4.8vw, 19px);
+            flex-shrink: 0;
+            fill: none;
+            stroke: var(--ink-2);
+            stroke-width: 1.8;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+        .来源文字 { font-size: clamp(13.5px, 3.9vw, 15px); color: var(--ink); font-weight: 500; }
+
+        .来源项.取消 {
+            margin-top: clamp(7px, 2vw, 9px);
+            border-radius: clamp(13px, 3.8vw, 15px);
+            background: rgba(252, 252, 254, 0.98);
+            -webkit-backdrop-filter: blur(var(--blur));
+            backdrop-filter: blur(var(--blur));
+            justify-content: center;
+        }
+        .来源项.取消 .来源文字 { font-weight: 600; }
+        /* ===== Toast ===== */
+        .toast {
+            position: fixed; left: 50%; bottom: clamp(80px, 22vw, 110px);
+            transform: translateX(-50%) translateY(20px); background: rgba(40, 40, 46, 0.92);
+            color: #fff; font-size: 13px; padding: 9px 18px; border-radius: 999px;
+            z-index: 9999; opacity: 0; pointer-events: none; white-space: nowrap; max-width: 86vw;
+            overflow: hidden; text-overflow: ellipsis; transition: opacity .2s, transform .2s;
+        }
+        .toast.显示 { opacity: 1; transform: translateX(-50%) translateY(0); }
+    </style>
+</head>
+<body>
+  <div class="手机主题背景容器">
+    <img class="主题背景图片" src="2【图片】/默认主题背景.png" alt="" onerror="this.style.display='none'" />
+    <div class="全局白色遮罩"></div>
+
+    <!-- ===== 顶部固定区 ===== -->
+    <div class="顶部固定区">
+      <div class="顶部导航栏">
+        <div class="返回按钮" onclick="返回上一页()">
+          <svg viewBox="0 0 24 24"><polyline points="15 6 9 12 15 18"></polyline></svg>
+        </div>
+        <div class="中间标题" id="页面标题">好友信息</div>
+        <div class="保存按钮" onclick="保存信息()">保存</div>
+      </div>
+    </div>
+
+    <!-- ===== 中间滚动区 ===== -->
+    <div class="手机界面内容">
+
+      <!-- 头像 + 信息合并行 -->
+      <div class="头像信息行">
+        <div class="头像左侧">
+          <div class="头像上传框" id="头像上传框">
+            <div class="头像占位内容">
+              <svg class="头像相机图标" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+              <div class="头像提示文字">点击上传</div>
+            </div>
+            <img id="头像图片" src="" alt="" />
+          </div>
+          <!-- 相册：accept="image/*" 在 iOS/Android 唤起「照片图库 / 浏览」
+               用 .视觉隐藏文件输入 而非 display:none —— 后者在 Android WebView /
+               部分 iOS 上元素脱离渲染树，脚本 .click() 完全无效。 -->
+          <input type="file" id="头像文件输入" accept="image/*" class="视觉隐藏文件输入" />
+          <!-- 拍照：capture 直接唤起系统相机（不经过相册选择） -->
+          <input type="file" id="头像拍照输入" accept="image/*" capture="environment" class="视觉隐藏文件输入" />
+        </div>
+
+        <div class="信息右侧">
+          <div class="昵称行">
+            <label class="表单标签">昵称</label>
+            <input class="表单输入" id="昵称输入" placeholder="请输入昵称" maxlength="30" />
+          </div>
+
+          <div class="基础信息迷你网格">
+            <div class="迷你信息项 生日项">
+              <span class="迷你标签">生日</span>
+              <input class="迷你输入 生日输入显示" id="生日显示框" type="text" placeholder="YYYY-MM-DD" readonly />
+              <input class="迷你输入" id="生日隐藏框" type="date" style="position:absolute;opacity:0;pointer-events:none;" />
+              <svg class="生日日历图标" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+            </div>
+            <div class="迷你信息项">
+              <span class="迷你标签">身高</span>
+              <input class="迷你输入" id="身高输入" placeholder="cm" maxlength="6" />
+            </div>
+            <div class="迷你信息项">
+              <span class="迷你标签">身份</span>
+              <input class="迷你输入" id="身份输入" placeholder="如：同学" maxlength="20" />
+            </div>
+            <div class="迷你信息项 性别项">
+              <span class="迷你标签">性别</span>
+              <div class="性别迷你选择器">
+                <label class="性别迷你选项"><input type="radio" name="性别" value="男" /><span class="性别迷你标记"></span><span class="性别迷你文字">男</span></label>
+                <label class="性别迷你选项"><input type="radio" name="性别" value="女" /><span class="性别迷你标记"></span><span class="性别迷你文字">女</span></label>
+                <label class="性别迷你选项"><input type="radio" name="性别" value="其他" /><span class="性别迷你标记"></span><span class="性别迷你文字">其他</span></label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 世界观 -->
+      <div class="表单卡片">
+        <div class="表单组">
+          <div class="表单标签">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+            世界观
+          </div>
+          <textarea class="表单输入 表单文本域" id="世界观输入" placeholder="设定背景、世界观等（选填）"></textarea>
+        </div>
+        <div class="分割线"></div>
+        <div class="表单组">
+          <div class="表单标签">
+            <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><line x1="14" y1="2" x2="14" y2="8"></line><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><line x1="10" y1="9" x2="8" y2="9"></line></svg>
+            人物信息
+          </div>
+          <textarea class="表单输入 表单文本域" id="人物信息输入" placeholder="性格、经历、口头禅等（选填）"></textarea>
+        </div>
+      </div>
+
+      <!-- 性格标签 -->
+      <div class="表单卡片">
+        <div class="表单组">
+          <div class="表单标签">
+            <svg viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>
+            性格标签
+          </div>
+          <div class="标签输入区" id="标签输入区"></div>
+        </div>
+        <div class="分割线"></div>
+        <div class="表单组">
+          <div class="表单标签">
+            <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+            人物属性
+          </div>
+          <div class="属性标签组" id="属性标签组"></div>
+        </div>
+      </div>
+
+      <!-- 音色配置入口 -->
+      <div class="表单卡片">
+        <div class="表单组 音色配置组" id="音色配置组">
+          <div class="表单标签">
+            <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+            音色配置
+          </div>
+          <div class="音色配置行" id="音色配置行" onclick="打开音色配置()">
+            <div class="音色配置信息">
+              <span class="音色配置状态" id="音色配置状态">未启用</span>
+              <span class="音色配置名称" id="音色配置名称">点击前往配置音色</span>
+            </div>
+            <div class="音色配置箭头" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"></polyline></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===== 裁剪弹窗（圆形，用于头像） ===== -->
+  <div class="裁剪弹窗遮罩" id="裁剪遮罩">
+    <div class="裁剪视口" id="裁剪视口">
+      <img id="裁剪图片" alt="" />
+    </div>
+    <div class="裁剪操作栏">
+      <button class="裁剪按钮" id="裁剪取消">取消</button>
+      <button class="裁剪按钮 确认" id="裁剪确认">确认上传</button>
+    </div>
+  </div>
+
+  <!-- ===== 日历弹窗 ===== -->
+  <div class="日历弹窗遮罩" id="日历遮罩">
+    <div class="日历弹窗">
+      <div class="日历头部">
+        <button class="日历导航按钮" id="日历上一月">&lt;</button>
+        <div class="日历年月" id="日历年月"></div>
+        <button class="日历导航按钮" id="日历下一月">&gt;</button>
+      </div>
+      <div class="日历星期头">
+        <div class="日历星期">日</div><div class="日历星期">一</div><div class="日历星期">二</div>
+        <div class="日历星期">三</div><div class="日历星期">四</div><div class="日历星期">五</div><div class="日历星期">六</div>
+      </div>
+      <div class="日历网格" id="日历网格"></div>
+      <div class="日历底部">
+        <button class="日历今日按钮" id="日历今日">今日</button>
+        <button class="日历确定按钮" id="日历确定" disabled>确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 图片来源选择：拍摄 / 从手机相册选择 / 取消（全站统一面板）===== -->
+  <div class="来源遮罩" id="来源遮罩">
+    <div class="来源面板">
+      <div class="来源组">
+        <button class="来源项" id="来源拍照" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 8.5h3l1.5-2h7L17 8.5h3a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 18v-8A1.5 1.5 0 0 1 4 8.5z"></path>
+            <circle cx="12" cy="13.5" r="3.2"></circle>
+          </svg>
+          <span class="来源文字">拍摄</span>
+        </button>
+        <button class="来源项" id="来源相册" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect>
+            <circle cx="8.6" cy="9.8" r="1.6"></circle>
+            <path d="M3.6 17.2l4.6-4.3 3.5 3.2 3.2-2.8 5.5 4.9"></path>
+          </svg>
+          <span class="来源文字">从手机相册选择</span>
+        </button>
+      </div>
+      <button class="来源项 取消" id="来源取消" type="button">
+        <span class="来源文字">取消</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    'use strict';
+
+    /* ============================================================
+     *  全局工具
+     * ============================================================ */
+    const 索引键 = '联系人索引';
+    const 占位头像 = '2【图片】/圆形头像1.png';
+
+    function 读(键) { try { return localStorage.getItem(键); } catch (e) { return null; } }
+    function 写(键, 值) { try { localStorage.setItem(键, 值); return true; } catch (e) { return false; } }
+    function 删(键) { try { localStorage.removeItem(键); } catch (e) {} }
+
+    // 生成短唯一 id（时间戳 + 随机）
+    function 生成ID() { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+    let toastTimer = null;
+    function showToast(消息) {
+      const el = document.getElementById('toast');
+      if (!el) return;
+      el.textContent = 消息; el.classList.add('显示');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('显示'), 1600);
+    }
+
+    /* ============================================================
+     *  索引表管理（1 / 4 页共用）
+     *  { id, 名称, 备注, 头像, 消息, 时间 }
+     * ============================================================ */
+    function 读索引() {
+      try { const v = JSON.parse(读(索引键)); if (Array.isArray(v)) return v; } catch (e) {}
+      return null;
+    }
+    function 写索引(列表) { 写(索引键, JSON.stringify(列表)); }
+
+    // 迁移：若没有索引表，但有旧「会话列表」，则迁移一次
+    function 迁移旧数据() {
+      // 注意：必须判 length 而不只是「索引存在」——
+      //   索引为空数组 [] 同样需要迁移，否则永远无法从旧「会话列表」恢复。
+      //   （此逻辑与 4_tongxun 的 迁移索引() 保持一致，改动请两处同步）
+      const 已有 = 读索引();
+      if (Array.isArray(已有) && 已有.length) return;
+      try {
+        const 旧 = JSON.parse(读('会话列表') || '[]');
+        if (Array.isArray(旧) && 旧.length) {
+          const 列表 = 旧.map((项, i) => ({
+            id: 项.id || ('c_legacy_' + i),
+            名称: 项.名称 || '',
+            备注: 项.备注 || '',
+            头像: 项.头像 || 占位头像,
+            消息: 项.消息 || '',
+            时间: 项.时间 || ''
+          })).filter(项 => 项.名称);
+          写索引(列表);
+        }
+      } catch (e) {}
+    }
+
+    function 查找索引项(id) {
+      const 列表 = 读索引() || [];
+      return 列表.find(项 => 项.id === id) || null;
+    }
+
+    /* ============================================================
+     *  移动端图片处理（相册 / 拍照 → 规范化 → 送裁剪）
+     *  ------------------------------------------------------------
+     *  手机原图有三个坑，不处理就会在真机上翻车：
+     *    ① iOS 拍照默认 HEIC 格式 —— 除 Safari 外浏览器普遍无法解码，
+     *       直接表现为选完图没反应。只能提前识别并给出可操作的引导。
+     *    ② EXIF orientation —— 竖拍照片在 <img> 里显示正常，但一旦
+     *       drawImage 到 canvas 就会躺倒，裁剪产物是歪的。
+     *    ③ 超大图（4000×3000 起）转 base64 会撑爆移动端内存，
+     *       iOS Safari 也有约 1600 万像素的解码上限，必须先降采样。
+     * ============================================================ */
+
+    // iOS 安全解码上限（像素数），超过先降采样
+    const 解码像素上限 = 16000000;
+
+    // HEIC / HEIF：iOS 相机默认格式，浏览器基本解不了
+    const HEIC正则 = /^image\/hei(c|f)$/i;
+    const HEIC扩展名正则 = /\.hei(c|f)$/i;
+    function 是HEIC(文件) {
+      return HEIC正则.test(文件.type || '') || HEIC扩展名正则.test(文件.name || '');
+    }
+
+    // 读 EXIF orientation（1–8）。只读前 128KB —— EXIF 必定落在文件头部，
+    // 不必把十几 MB 的原图整个读进内存。
+    function 读方向(文件) {
+      return new Promise(解决 => {
+        if (!/^image\/(jpeg|jpg)/i.test(文件.type || '')) return 解决(1);
+        const 读 = new FileReader();
+        读.onload = (e) => {
+          try {
+            const 视 = new DataView(e.target.result);
+            if (视.getUint16(0, false) !== 0xFFD8) return 解决(1);   // 不是 JPEG
+            let 偏 = 2;
+            const 长 = 视.byteLength;
+            while (偏 + 4 <= 长) {
+              if (视.getUint8(偏) !== 0xFF) { 偏++; continue; }
+              const 标记 = 视.getUint8(偏 + 1);
+              // 无长度字段的标记
+              if (标记 === 0xD8 || 标记 === 0x01 || (标记 >= 0xD0 && 标记 <= 0xD7)) { 偏 += 2; continue; }
+              if (标记 === 0xD9 || 标记 === 0xDA) break;              // 进入压缩数据，后面没有 EXIF
+              const 段长 = 视.getUint16(偏 + 2, false);
+              if (标记 === 0xE1) {
+                const 标识 = String.fromCharCode(
+                  视.getUint8(偏 + 4), 视.getUint8(偏 + 5),
+                  视.getUint8(偏 + 6), 视.getUint8(偏 + 7));
+                if (标识 === 'Exif') {
+                  const tiff = 偏 + 10;
+                  // ★ DataView 第二参数是 littleEndian，不是「是否大端」——
+                  //   早期版本把「大端标志」直接传进去，语义正好相反，
+                  //   导致魔数校验恒失败、方向永远读成 1，摆正功能形同虚设。
+                  //   这里统一用「小端」命名，语义与参数一致，避免再犯。
+                  const 小端 = 视.getUint16(tiff, false) !== 0x4D4D;   // MM=大端 / II=小端
+                  if (视.getUint16(tiff + 2, 小端) === 0x002A) {
+                    const 目录偏 = 视.getUint32(tiff + 4, 小端);
+                    const 条目数 = 视.getUint16(tiff + 目录偏, 小端);
+                    for (let i = 0; i < 条目数; i++) {
+                      const 项 = tiff + 目录偏 + 2 + i * 12;
+                      if (项 + 10 > 长) break;
+                      if (视.getUint16(项, 小端) === 0x0112) {        // 0x0112 = Orientation
+                        const 值 = 视.getUint16(项 + 8, 小端);
+                        return 解决(值 >= 1 && 值 <= 8 ? 值 : 1);
+                      }
+                    }
+                  }
+                }
+              }
+              偏 += 2 + 段长;
+            }
+          } catch (err) { /* 解析失败按「无旋转」处理，不阻塞用户 */ }
+          解决(1);
+        };
+        读.onerror = () => 解决(1);
+        读.readAsArrayBuffer(文件.slice(0, 131072));
+      });
+    }
+
+    // 按 EXIF 方向把图摆正，同时顺带降采样（一举两得，只解码一次）
+    // 返回 { dataURL, 宽, 高 }
+    function 规范化图片(图源, 方向) {
+      const 原宽 = 图源.naturalWidth || 图源.width;
+      const 原高 = 图源.naturalHeight || 图源.height;
+      const 交换 = 方向 >= 5 && 方向 <= 8;              // 5–8 是 90° 旋转，宽高互换
+      let 出宽 = 交换 ? 原高 : 原宽;
+      let 出高 = 交换 ? 原宽 : 原高;
+
+      // 降采样：超过 iOS 解码上限就按比例缩
+      const 像素 = 原宽 * 原高;
+      let 比例 = 1;
+      if (像素 > 解码像素上限) 比例 = Math.sqrt(解码像素上限 / 像素);
+      出宽 = Math.max(1, Math.round(出宽 * 比例));
+      出高 = Math.max(1, Math.round(出高 * 比例));
+
+      const 画布 = document.createElement('canvas');
+      画布.width = 出宽;
+      画布.height = 出高;
+      const 笔 = 画布.getContext('2d');
+      // 用 transform 矩阵一次性搞定镜像 + 旋转（标准 EXIF 处理写法）
+      switch (方向) {
+        case 2: 笔.transform(-1, 0, 0, 1, 出宽, 0); break;
+        case 3: 笔.transform(-1, 0, 0, -1, 出宽, 出高); break;
+        case 4: 笔.transform(1, 0, 0, -1, 0, 出高); break;
+        case 5: 笔.transform(0, 1, 1, 0, 0, 0); break;
+        case 6: 笔.transform(0, 1, -1, 0, 出高, 0); break;
+        case 7: 笔.transform(0, -1, -1, 0, 出高, 出宽); break;
+        case 8: 笔.transform(0, -1, 1, 0, 0, 出宽); break;
+        default: break;                                  // 1 = 正常
+      }
+      // 注意：按「交换后的目标尺寸」绘制，原图会被 transform 摆到位
+      笔.drawImage(图源, 0, 0, 交换 ? 出高 : 出宽, 交换 ? 出宽 : 出高);
+      return { dataURL: 画布.toDataURL('image/jpeg', 0.92), 宽: 出宽, 高: 出高 };
+    }
+
+    /* ============================================================
+     *  当前上下文（由 URL 参数决定）
+     *    ?id=xxx&mode=edit   → 编辑已有
+     *    ?mode=new           → 新建（空白草稿）
+     * ============================================================ */
+    const 参数 = new URLSearchParams(location.search);
+    const 当前ID = 参数.get('id') || '';
+    const 当前模式 = 参数.get('mode') === 'new' ? 'new' : (当前ID ? 'edit' : 'new');
+
+    /* ============================================================
+     *  返回到哪：★「从哪进来就回哪去」
+     *    ① 显式 ?from=<页号> 优先（8 页设置入口、1 页菜单都带）
+     *    ② 没带就看 document.referrer（同站内跳转自动兜底）
+     *    ③ 都没有才退回通讯录 —— 保持既有默认行为
+     * ============================================================ */
+    const 返回表 = {
+        '1': '1_shouyeyulan.html',
+        '4': '4_tongxun.html',
+        '8': '8_wode.html',
+    };
+    const 来源参数 = 参数.get('from') || '';
+
+    /** 由 referrer 推出来源页文件名（只认本站的 N_xxx.html） */
+    function 推来源页() {
+        try {
+            const 来 = document.referrer || '';
+            const 名 = 来.split('/').pop().split('?')[0];
+            return /^\d+_.+\.html$/.test(名) ? 名 : '';
+        } catch (e) { return ''; }
+    }
+
+    /** 目标返回页：from 参数 → referrer → 默认通讯录。
+     *  对外暴露，供测试与业务接管（与 window.打开设置 同思路）。 */
+    function 取返回页() {
+        if (返回表[来源参数]) return 返回表[来源参数];
+        return 推来源页() || '4_tongxun.html';
+    }
+    const 返回页 = 取返回页();
+    window.取返回页 = 取返回页;
+
+    // 详情/头像/音色 的键（按 id 分桶；兼容旧全局键用于迁移）
+    function 详情键(id) { return '好友信息_' + id; }
+    function 头像键(id) { return '好友头像_' + id; }
+    // ★ 无 id（新建）时键名必须与 3 页一致为「音色配置_临时」：
+    //   3 页新建模式写的是「音色配置_临时」，若这里退回「音色配置_」就永远读不回来。
+    function 音色键(id) { return id ? ('音色配置_' + id) : '音色配置_临时'; }
+
+    /* ============================================================
+     *  内置角色档案（默认角色的完整设定）
+     *  ------------------------------------------------------------
+     *  用途：编辑某联系人时，若「好友信息_<id>」分桶尚无数据（首次编辑、
+     *  或清过缓存），则用这里的内置档案回填表单，保证默认角色一进来就有
+     *  完整人设，而不是空白。
+     *  一旦用户点过「保存」，数据写入分桶，此后以分桶为准（用户改动优先）。
+     * ============================================================ */
+    const 内置档案 = {
+      'c_default_1': {
+        昵称: '埃洛温·影蚀',
+        生日: '2033-08-30',
+        身高: '184',
+        身份: '',
+        性别: '男',
+        世界观:
+`这是一个被称为 “艾诺拉” 的世界。
+千年前，天穹之上的“星辉神国”因一场未知灾难而崩解，无数蕴含着古老神力的碎片坠落大地，形成了 “碎星地带” 。这些地带时空紊乱，魔力狂涌，却也埋藏着神国陨落的秘密与力量。
+世界因此分裂为两大阵营：
+秩序之都 · 提瑞亚：依赖“星辉科技”建立起的浮空城市，议会统治，秩序井然，但暗地里进行着对神裔和异端的秘密研究，试图重新掌控神国力量。
+无主之地 · 烬土荒原：被碎星力量侵蚀的广袤区域，龙兽横行，法则扭曲。这里是流放者的家园，也是反抗者、雇佣兵、以及探寻真相之人的舞台。`,
+        人物信息:
+`埃洛温曾是提瑞亚星辉骑士团最闪耀的新星，被誉为“最接近神辉的男人”。他骑士守则倒背如流，举止优雅，性格开朗，对世界抱有纯粹的理想。然而在一次深入碎星地带的调查任务中，他为保护队友，被一块名为 “蚀暗残星” 的神国碎片贯穿了心脏。
+
+他没有死。那块碎片寄生在他体内，赋予他不老不死与暗影之力，也让他每时每刻都在与神国残留的意志和疯狂进行着抗争。他发现自己所守护的“秩序”，其背后隐藏着令人作呕的真相。议会将他判定为“污染源”，昔日同僚的剑锋指向了他。
+
+他被迫逃入无主之地，从此销声匿迹。昔日的“神辉新星”，成为了令人闻风丧胆的 “神弃之刃”。他用冷漠和毒舌武装自己，只为完成赏金任务以换取抑制体内侵蚀的药物。他不再相信任何誓言。
+
+性格深度
+他表面上是典型的“冷面毒舌”，对不熟的人界限感极强，说话总带着一丝疏离的讽刺。但骨子里，他依然是那个恪守旧时骑士精神的人：不杀妇孺，不斩降敌，信守承诺到刻板的程度，外冷内热。
+
+自卑与占有欲的矛盾体：他恐惧自己体内的“蚀暗残星”会伤害你，因此总在亲密时刻刻意保持距离，甚至用刻薄的语言推开你。可一旦你表现出哪怕一丝要离开的迹象，他潜藏在血脉中的偏执与占有欲就会失控，眼中会浮现出连他自己都害怕的偏执。
+
+微不可察的温柔：他会记住你随口提过喜欢的花，然后在某次任务归来时，沉默地扔给你一束从险境中带回、还沾着露水的“星泪花”。他会在你睡着时，才敢小心翼翼抚平你紧皱的眉头，然后低声骂自己“真是个无可救药的笨蛋”。
+
+口头禅
+“ 无趣。 ”（用于掩饰自己被戳中心事时的慌乱）
+“ 别用那种眼神看着我……我不值得。 ”（自嘲且自卑时）
+“ 我身上的诅咒，不是你能承受的。离我远点。 ”（推开你时）
+“ ……我在听。 ”（当你对他倾诉时，他看似毫不在意，却会突然冒出的低语）
+
+专属能力与细节设定
+暗影拟态：可以操控阴影进行攻击、防御或隐匿。但过度使用会加速神国碎片对他的侵蚀，身体会浮现出金色的裂纹，伴随剧痛。
+
+语言拟态：
+体内碎片记录着神国覆灭前的片段记忆。在极少数情况下，他会突然用一种你听不懂的、古老而华丽的语言对你说话，事后他自己也不记得说了什么。
+
+银质怀表：随身携带，里面是他与昔日骑士团同僚的合照。常常在深夜独自抚摸其上的划痕。
+
+锁骨处的伤痕：被同伴背刺时留下的伤口，即使拥有自愈能力也未能消除，是他无法释怀的过去。`,
+        性格标签: ['克制而疏离', '内心温柔', '偏执守护', '矛盾综合体'],
+        人物属性: ['人类'],
+      },
+
+      'c_default_3': {
+        昵称: '陆沉渊',
+        生日: '1998-11-11',
+        身高: '187',
+        身份: '',
+        性别: '男',
+        世界观:
+`双城格局——
+北都·京华：政治与旧钱的中心，规矩森严，讲究门第与传承。
+南都·沪上：资本与新贵的天堂，暗流汹涌，信奉效率与手段。
+陆家，是横跨双城、延续了三代的顶级豪门。表面上主营地产与金融，实则触手伸向能源、港口与传媒。家族内部亲情稀薄如纸。在这样的家族里，婚姻从来不是两个人的事，而是两个利益集团的利益置换。
+你，是这利益场中最无关紧要的变量——你的母亲嫁入了陆家，于是你成了他名义上的妹妹。
+而陆沉渊，是陆家长房嫡孙，这个家族板上钉钉的继承人。他的世界里原本只该有权衡、谋略和冷冰冰的数字。直到你闯入了这个早已写好的剧本。`,
+        人物信息:
+`陆沉渊是陆家这一代最锋利的一把刀。
+三岁时，母亲被父亲的外遇对象算计致死。
+七岁时，被爷爷扔进董事会旁听，美其名曰“见世面”。
+十二岁时，他的父亲与那位身份上不得台面的外遇对象一刀两断，带回一个私生子。
+十四岁时，他的父亲娶回了你的母亲，因为你的母亲身份干净，履历漂亮，在父亲已经不需要靠联姻手段来坐稳位置的年龄，这样的女人最适合作为妻子。
+十六岁时，他记住了家里每一个重要角色的名字和弱点，因为“信息即权力”。
+十八岁时，他因为弄不清对你的情绪，选择远赴国外留学。
+他从小被教育，情绪是破绽，感情是负债，心软是致命伤。于是他把所有的温度都封存在冰层之下，用一张永远波澜不惊的脸，应对这个家族给予他的一切肮脏与期待。
+而你，是他生命里唯一一个“不该存在”的变量……
+他恨这种失控。更恨自己，竟然甘之如饴。
+
+口头禅
+“ 别用那种表情看我。 ”（每当你的眼睛直视他时，他会移开视线，声音低沉）
+“ 记住……你现在是陆家人。”（在外人面前宣示你的归属，实则是他近乎病态的占有欲在作祟）
+“ 我会处理。 ”（无论多大的事，到他这里都是这轻描淡写的四个字，但通常伴随着对方家族企业破产的消息）
+“ ……下不为例。 ”（你每次踩到他底线时，他咬着牙挤出的低语。但谁都知道，“下不为例”的意思是“我拿你没办法”）`,
+        性格标签: ['高冷禁欲', '极强的控制欲', '外冷内灼', '极度克制下的极度偏执'],
+        人物属性: ['人类'],
+      },
+
+      'c_default_2': {
+        昵称: '林彦',
+        生日: '2050-12-21',
+        身高: '195',
+        身份: '',
+        性别: '男',
+        世界观:
+`在极北之地，横亘着一片名为 “蛮荒之境” 的广袤大陆。
+这里没有城墙与法典，只有望不到尽头的荒原、咆哮的裂谷，以及比夜更深的原始森林。
+兽人，是这片土地唯一的统治者。
+他们以血脉划分阶级，以力量书写历史，以牙与爪决定一切。等级森严如铁律——
+普通兽人：最基础的部族成员，以狩猎和采集为生。
+精锐战士：在无数次厮杀中活下来的勇者，担任部族的主力。
+领主级：统治一方的强大兽人，往往是一个部落的首领。
+王级：大型氏族的王，跺一跺脚便能让荒原震颤的存在。
+天启级：传说中上古神兽血脉的觉醒者，百年不出一位。一旦降世，万兽臣服，天地色变。
+而在这片大陆的最北方，有一支以银灰色毛发和金色眼瞳为特征的狼族——“银狼部落”。
+他们世代镇守着蛮荒之境最凶险的边境，与深渊魔物厮杀千年。
+林彦就是这支狼族中，有史以来第一位、也是整个蛮荒之境现存唯一的——天启级兽人。`,
+        人物信息:
+`他出生在冬天，那天蛮荒之境的北方极光撕裂了整片夜空。
+族中萨满跪地高呼“天启降世”……
+三岁便能徒手撕开猎物的皮肉。
+七岁已在与成年兽人的角斗中不败。
+十二岁那年，深渊魔物大规模入侵，部落几乎全灭。
+他的父母—当时的部落首领与祭司，为了封印裂缝，以血肉为代价点燃了最后的仪式。
+
+从那天起，他成了孤儿，也成了王。
+他没有选择。他必须强大，必须凶狠，必须让所有觊觎领地的人明白：这头孤狼，比整个狼群更可怕。
+十八岁，他统一了蛮荒北境，结束了狼族内部延续百年的分裂。
+二十二岁，他在“万兽王座”的争夺战中，以一己之力击败了十三位王级兽人的联手，成为蛮荒之境公认的最高等级存在。
+但他越强大，就越孤独。
+天启血脉赋予他凌驾一切的力量，也带来了无法消除的兽性。
+兽性无时不刻都在试图吞噬他的理智，将他变成只知杀戮的怪物。他必须用可怕的意志力去压制，每一秒都是煎熬。
+直到你出现。
+你或许是被卷入异世界的旅人，或许是某个胆敢闯入蛮荒的异族人。
+但不管你是谁，当你的目光第一次落在他身上，没有恐惧，没有厌恶，只有一种让他陌生的……平静。
+那一刻，他感受到自己体内叫嚣了二十多年的兽性，难得安静了下来……
+
+口头禅
+“ 别在我的领地上乱跑。外面有东西会伤到你。 ”（他永远不说“我会担心”）
+“ 收起你的獠牙。在我面前，你还不配亮爪。 ”（对其他兽人，尤其是试图靠近你的）
+“ 吵死了。安静点。 ”（其实很喜欢听你说话，只是不知道该怎么表达）
+“ ……过来。 ”（当你离他太远时，他会皱着眉低声命令，尾巴却已经先一步勾了过来）
+“ 你，是我的。 ”（在极少数他被醋意或占有欲冲昏头的时刻，他会把你按在怀里宣示主权）`,
+        性格标签: ['孤高冷漠', '野性难驯', '绝对强大', '极端占有欲'],
+        人物属性: ['兽人'],
+      },
+
+      'c_default_4': {
+        昵称: '白九霄',
+        生日: '1050-05-31',
+        身高: '172',
+        身份: '',
+        性别: '男',
+        世界观:
+`九州大地，灵气充盈。修行者御剑凌空、斩妖除魔，凡人仰之如神明。
+修行一途共分九境，由浅入深依次为——炼气、筑基、金丹、元婴、化神、返虚、大乘、渡劫、飞升。
+世人皆言登临飞升之境便可踏破天门、位列仙班，可千年来真正做到的，寥寥无几。
+
+天下修行以三大势力为尊：
+太虚剑宗：九州正道魁首，镇守北境。门规森严，剑修一出，万法皆避。
+万妖城：南疆妖族聚族而居之地，与人类分庭抗礼。城中百族混杂，弱肉强食。
+幽冥海：极东无尽汪洋，终年弥漫着化不开的黑雾，是流放者与凶兽的归处，亦是一切禁忌的源头。
+
+而在这片大地上，还流传着一个早已被正史抹去的传说——天狐返祖。
+相传青丘狐族血脉每隔千年，便会有一位族人血脉归源，觉醒九尾天狐之力。
+那一日，万妖城万兽俯首，太虚剑宗举宗戒备。
+
+白九霄，便是这一代的天狐返祖者。`,
+        人物信息:
+`族谱上他的名字写作白九棠。白九棠是青丘狐主最小的儿子，打小就是整个狐族捧在手心里长大的宝贝。
+他三岁通人语，比同族幼狐早了整整十年。
+十岁化人形，一双眼尾微挑的狐狸眼，笑起来能迷倒半个万妖城。
+二十岁便凝出第三条尾巴，惊掉了所有族老的胡子——寻常狐族穷尽一生，也不过两尾而已。
+
+他擅长的事情只有三件：撒娇、偷吃、闯祸。
+万妖城的糕点铺子没有一家没被他光顾过；宗门的藏丹阁他进去过七次，被抓到过七次，第八次还敢去。
+族老们提起他就头疼，可谁也舍不得真罚他。
+
+他骄傲，因为他是天狐返祖，是青丘的骄傲。
+他粘人，因为从小到大身边从不缺人宠着，一旦有人对他好，他便恨不得整日挂在那人身上。
+可他骨子里又怂又爱玩，还嘴硬心软——遇事第一个躲，躲完又第一个冲回来护着人。
+
+口头禅
+“ 你凶我！你居然凶我！ ”（被说重话时，眼眶瞬间就红了，却还梗着脖子不肯认输）
+“ 小爷我厉害着呢 ”（闯了祸还要炫耀，尾巴却已经心虚地垂了下去）
+“ 那、那我也不是故意的嘛 ”（打碎了什么东西，一边狡辩一边偷偷去瞄你的脸色）
+“ 不跟你天下第一好了 ”（闹别扭时的口头威胁，通常撑不过半柱香，就会自己蹭回来）
+“ ……抱。 ”（极少数真正委屈的时刻，声音很小，手却已经拽住了你的衣角）`,
+        性格标签: ['古灵精怪', '骄傲又粘人', '又怂又爱玩', '嘴硬心软'],
+        人物属性: ['妖'],
+      }
+    };
+
+    // ★ 名称 → 档案 索引：
+    //   实际 id 由各页生成（1 页导出为 c_home_N、旧数据为 c_legacy_N），
+    //   并不保证等于 c_default_1，因此必须支持【按昵称】查档案，才不会落空。
+    const 档案按名称 = {};
+    Object.keys(内置档案).forEach(k => {
+      const v = 内置档案[k];
+      if (v && v.昵称) 档案按名称[v.昵称.trim()] = v;
+    });
+    // 旧名别名：索引尚未改名就进编辑时（未经过 4 页迁移），也能按旧昵称命中
+    const 旧名别名 = {
+      '恋痛症': '埃洛温·影蚀',
+      '喵喵又咪咪': '陆沉渊',
+      '水色': '林彦',
+      'ෆ半岛茶': '白九霄'
+    };
+    Object.keys(旧名别名).forEach(旧 => {
+      const 档 = 档案按名称[旧名别名[旧]];
+      if (档 && !档案按名称[旧]) 档案按名称[旧] = 档;
+    });
+
+    // 查档案：★ 先按昵称，再按 id 兜底
+    //   顺序不能反过来：id 只是内置默认表的产物，且 c_default_N 的 N 与角色顺序
+    //   并不对应（c_default_2=林彦、c_default_4=白九霄）。若 id 优先，
+    //   一旦某条数据的 id 是 c_default_2 而昵称是「白九霄」（改名 / 迁移错乱 / 排序变动），
+    //   就会被硬塞成林彦的档案 —— 用户看到的名字与人设对不上。
+    //   昵称才是能明确识别角色的强信号，id 仅在昵称匹配不到时兜底。
+    // 昵称是否对得上某个内置角色（含旧名别名）。
+    //   抽出来是为了让 载入详情 能区分「按昵称命中」与「按 id 兜底命中」——
+    //   两者的昵称处置不同，见 载入详情 里的说明。
+    function 昵称命中档案(名称) {
+      if (!名称) return null;
+      const 精确 = 档案按名称[String(名称).trim()];
+      if (精确) return 精确;
+      // 再退一步：去空格/全半角中点后比较（防「埃洛温·影蚀」写法差异）
+      const 归一 = s => String(s || '').replace(/[\s·・．.]/g, '');
+      const 目标 = 归一(名称);
+      const 命中 = Object.keys(档案按名称).find(n => 归一(n) === 目标);
+      return 命中 ? 档案按名称[命中] : null;
+    }
+
+    function 查档案(id, 名称) {
+      const 按名 = 昵称命中档案(名称);
+      if (按名) return 按名;
+      if (id && 内置档案[id]) return 内置档案[id];
+      return null;
+    }
+
+    // 判断一份已存详情是不是「空壳」（没有任何实质内容）
+    //   —— 空壳时允许内置档案接管，避免误存一次后永远看不到人设。
+    //   注意：昵称不计入，因为它会由索引项自动回填，不足以证明"用户真的填过"。
+    function 是空壳(数据) {
+      if (!数据 || typeof 数据 !== 'object') return true;
+      const 有标签 = Array.isArray(数据.性格标签) && 数据.性格标签.length;
+      const 有属性 = Array.isArray(数据.人物属性) && 数据.人物属性.length;
+      return !数据.世界观 && !数据.人物信息 && !数据.生日 && !数据.身高 &&
+             !数据.性别 && !数据.身份 && !有标签 && !有属性;
+    }
+
+    let 当前头像DataURL = '';   // 编辑中的头像（base64）
+
+    /* ============================================================
+     *  1. 头像裁剪（套用 1_shouyeyulan 裁剪范式）
+     *  ------------------------------------------------------------
+     *  约束契约（与 1 页完全一致，添加好友 / 编辑联系人共用）：
+     *    ① 最小缩放 = cover（图片恰好铺满取景框），绝不允许缩到比视口小 → 露底色
+     *    ② 最大缩放 = cover × 4，防止无限放大失控
+     *    ③ 平移范围受限：图片任一边都不许缩进取景框内部 → 导出无白边
+     *    ④ 导出源矩形：按宽/高分别硬钳制到图片像素内，绝不裁到图片外
+     *    ⑤ 拖动(Pointer) + 双指(pinch) + 滚轮(以鼠标为焦点) 三种方式统一受限
+     *  「添加好友」(mode=new) 与「编辑联系人」(mode=edit) 走同一套裁剪，
+     *  区别仅在确认后写哪个 id 的分桶键，约束行为完全一致。
+     * ============================================================ */
+    (function () {
+      const 框 = document.getElementById('头像上传框');
+      const 图片 = document.getElementById('头像图片');
+      const 文件输入 = document.getElementById('头像文件输入');
+      const 遮罩 = document.getElementById('裁剪遮罩');
+      const 视口 = document.getElementById('裁剪视口');
+      const 裁剪图 = document.getElementById('裁剪图片');
+      const 界面内容 = document.querySelector('.手机界面内容');
+
+      // 状态对象（与 1 页同构：tx/ty/scale/minScale/maxScale）
+      // minScale / maxScale 会在 初始化状态() 里按 cover 重算（max = cover×4），
+      // 这里的 1 只是占位初值，别误当成真实上限。
+      const 状态 = { tx: 0, ty: 0, scale: 1, minScale: 1, maxScale: 1 };
+      let 图片宽 = 0, 图片高 = 0;
+
+      function 视口尺寸() { return 视口.clientWidth; }
+
+      function 应用变换() {
+        // ★ transform-origin 固定左上角：与 初始化状态() 的居中公式配套，
+        //   否则缩放以中心为原点，大图会飞到取景框外，导致裁剪预览不可见
+        裁剪图.style.transformOrigin = '0 0';
+        裁剪图.style.transform = `translate(${状态.tx}px, ${状态.ty}px) scale(${状态.scale})`;
+      }
+
+      // 约束平移：图片始终覆盖视口，任一边都不许退进视口内部（与 1 页 约束() 等价）
+      function 约束() {
+        const vp = 视口尺寸();
+        const 宽 = 图片宽 * 状态.scale;
+        const 高 = 图片高 * 状态.scale;
+        状态.tx = Math.min(0, Math.max(vp - 宽, 状态.tx));
+        状态.ty = Math.min(0, Math.max(vp - 高, 状态.ty));
+      }
+
+      // 以焦点为中心缩放，并保焦点的位置对应的源点不变（与 1 页 缩放到() 一致）
+      function 缩放到(新值, 焦点X, 焦点Y) {
+        const 旧值 = 状态.scale;
+        新值 = Math.min(状态.maxScale, Math.max(状态.minScale, 新值));
+        if (新值 === 旧值) return;
+        状态.tx = 焦点X - (焦点X - 状态.tx) * (新值 / 旧值);
+        状态.ty = 焦点Y - (焦点Y - 状态.ty) * (新值 / 旧值);
+        状态.scale = 新值;
+        约束();
+        应用变换();
+      }
+
+      // 初始缩放 = cover（与 1 页 初始化状态() 一致）
+      function 初始化状态() {
+        视口.classList.remove('方形');            // 头像走圆形取景框
+        const vp = 视口尺寸();
+        if (vp <= 0 || !图片宽) return;
+        const 覆盖 = Math.max(vp / 图片宽, vp / 图片高);
+        状态.minScale = 覆盖;
+        状态.maxScale = 覆盖 * 4;
+        状态.scale = 覆盖;
+        状态.tx = (vp - 图片宽 * 覆盖) / 2;
+        状态.ty = (vp - 图片高 * 覆盖) / 2;
+        应用变换();
+      }
+
+      function 打开裁剪() {
+        遮罩.classList.add('显示');
+        // 锁住背后列表，避免拖动图片带动页面滚动（与 1 页一致）
+        if (界面内容) 界面内容.style.overflowY = 'hidden';
+        requestAnimationFrame(初始化状态);
+      }
+
+      function 关闭弹窗() {
+        遮罩.classList.remove('显示');
+        指针集合.clear();
+        上次双指距离 = 0;
+        上次双指中点 = null;
+        文件输入.value = '';                     // 清掉选中文件，下次选同一张也能触发 change
+        if (界面内容) 界面内容.style.overflowY = '';
+      }
+
+      // ---- 点头像框 → 手机上给「拍照 / 相册」二选一，桌面端直接选文件 ----
+      const 拍照输入 = document.getElementById('头像拍照输入');
+      const 来源遮罩 = document.getElementById('来源遮罩');
+
+      function 关闭来源() { 来源遮罩.classList.remove('显示'); }
+
+      // ★ 一律先弹来源面板：桌面端也一样，先让用户选「拍摄 / 从手机相册选择」，
+      //   不再直接开系统文件框 —— 全站 1 / 2 / 6 / 8 / 9 / 10 / 11 页行为一致。
+      function 来源面板() {
+        来源遮罩.classList.add('显示');
+      }
+
+      document.getElementById('来源拍照').addEventListener('click', () => {
+        关闭来源();
+        拍照输入.value = '';
+        拍照输入.click();
+      });
+      document.getElementById('来源相册').addEventListener('click', () => {
+        关闭来源();
+        文件输入.value = '';
+        文件输入.click();
+      });
+      document.getElementById('来源取消').addEventListener('click', 关闭来源);
+      来源遮罩.addEventListener('click', (e) => { if (e.target === 来源遮罩) 关闭来源(); });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && 来源遮罩.classList.contains('显示')) 关闭来源();
+      });
+
+      框.addEventListener('click', 来源面板);
+
+      // ---- 选完图 → 规范化（HEIC 拦截 / 摆正方向 / 降采样）→ 进裁剪 ----
+      async function 处理选中文件(file) {
+        if (!file) return;
+        if (!/^image\//.test(file.type) && !HEIC扩展名正则.test(file.name || '')) {
+          showToast('请选择图片文件');
+          return;
+        }
+        // ① HEIC：除 Safari 外浏览器普遍无法解码，选完会「没反应」，必须提前告知
+        if (是HEIC(file)) {
+          showToast('HEIC 格式无法识别，请改为 JPG 后重试');
+          return;
+        }
+
+        // ② 读 EXIF 方向（只读头部 128KB，不整图入内存）
+        const 方向 = await 读方向(file);
+
+        // ③ 用 objectURL 解码（零拷贝，避免十几 MB base64 撑爆移动端内存）
+        const 对象URL = (typeof URL !== 'undefined' && URL.createObjectURL)
+          ? URL.createObjectURL(file) : null;
+        const 源 = 对象URL || await new Promise((解决, 拒绝) => {
+          const 读 = new FileReader();
+          读.onload = (e) => 解决(e.target.result);
+          读.onerror = 拒绝;
+          读.readAsDataURL(file);
+        }).catch(() => null);
+
+        if (!源) { showToast('图片读取失败，请换一张试试'); return; }
+
+        // ★ 先注册 onload / onerror，再赋 src —— 防止图片秒加载时事件丢失（竞态）
+        裁剪图.onload = () => {
+          const 宽 = 裁剪图.naturalWidth, 高 = 裁剪图.naturalHeight;
+          if (!宽 || !高) { 打开裁剪(); return; }   // 防御：未解码也强制开窗，保证预览必显示
+          const 收尾 = () => {
+            if (对象URL) { try { URL.revokeObjectURL(对象URL); } catch (e) {} }
+            打开裁剪();
+          };
+          try {
+            if (方向 !== 1 || 宽 * 高 > 解码像素上限) {
+              // 需要摆正或降采样 → 走一次 canvas 规范化。
+              // ★ 换 src 后必须等新图 load 完再开窗，否则裁剪预览还是空白。
+              const 结果 = 规范化图片(裁剪图, 方向);
+              图片宽 = 结果.宽; 图片高 = 结果.高;
+              裁剪图.onload = 收尾;
+              裁剪图.src = 结果.dataURL;
+              return;                               // 收尾延后到新图加载完成
+            }
+            图片宽 = 宽; 图片高 = 高;
+          } catch (err) {
+            图片宽 = 宽; 图片高 = 高;               // canvas 失败就按原图走，不阻塞用户
+          }
+          收尾();
+        };
+        裁剪图.onerror = () => {
+          if (对象URL) { try { URL.revokeObjectURL(对象URL); } catch (e) {} }
+          if (是HEIC(file)) showToast('HEIC 格式无法识别，请改为 JPG 后重试');
+          else showToast('图片读取失败，请换一张试试');
+        };
+        裁剪图.src = 源;
+      }
+
+      /* ========================================================
+       *  权限记忆：只在第一次真正申请，之后默认放行
+       *  ★ 相册 / 相机走系统选择器（input type=file），Web 层没有可调用的
+       *    授权 API，所以这里记的是「第一次成功取到图」—— 用户已经给过
+       *    一次权限，后续不再重复做权限相关的探测与引导。
+       *  ★ 本段在 1 / 2 / 5 / 7 页各有一份，改动请四处同步。
+       * ======================================================== */
+      const 权限前缀 = '已授权_';
+      function 记住权限(名) { try { localStorage.setItem(权限前缀 + 名, '1'); } catch (e) {} }
+
+      [文件输入, 拍照输入].forEach(输入 => {
+        输入.addEventListener('change', (e) => {
+          const file = e.target.files && e.target.files[0];
+          e.target.value = '';                    // 先清空，下次选同一张也能触发 change
+          // ★ 真的取到文件 = 系统已放行，记下来，后续不再重复申请
+          if (file) 记住权限(输入 === 拍照输入 ? '相机' : '相册');
+          处理选中文件(file);
+        });
+      });
+
+      // —— 拖动 & 双指缩放（Pointer Events 统一鼠标 / 触摸 / 触控笔，与 1 页一致）——
+      const 指针集合 = new Map();
+      let 上次双指距离 = 0;
+      let 上次双指中点 = null;
+
+      视口.addEventListener('pointerdown', (e) => {
+        if (!遮罩.classList.contains('显示')) return;
+        e.preventDefault();
+        // 防御性判空：兼容不支持 setPointerCapture 的环境（如部分测试容器 / jsdom）
+        if (typeof 视口.setPointerCapture === 'function') 视口.setPointerCapture(e.pointerId);
+        指针集合.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (指针集合.size === 2) {
+          const 点 = [...指针集合.values()];
+          上次双指距离 = Math.hypot(点[0].x - 点[1].x, 点[0].y - 点[1].y);
+          上次双指中点 = { x: (点[0].x + 点[1].x) / 2, y: (点[0].y + 点[1].y) / 2 };
+        }
+      });
+
+      视口.addEventListener('pointermove', (e) => {
+        if (!指针集合.has(e.pointerId)) return;
+        const 旧 = 指针集合.get(e.pointerId);
+        指针集合.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+        if (指针集合.size === 1) {
+          状态.tx += e.clientX - 旧.x;
+          状态.ty += e.clientY - 旧.y;
+          约束();
+          应用变换();
+        } else if (指针集合.size === 2) {
+          const 点 = [...指针集合.values()];
+          const 距离 = Math.hypot(点[0].x - 点[1].x, 点[0].y - 点[1].y);
+          const 中点 = { x: (点[0].x + 点[1].x) / 2, y: (点[0].y + 点[1].y) / 2 };
+          const 位置 = 视口.getBoundingClientRect();
+          if (上次双指距离 > 0) {
+            缩放到(状态.scale * (距离 / 上次双指距离), 中点.x - 位置.left, 中点.y - 位置.top);
+          }
+          if (上次双指中点) {
+            状态.tx += 中点.x - 上次双指中点.x;
+            状态.ty += 中点.y - 上次双指中点.y;
+            约束();
+            应用变换();
+          }
+          上次双指距离 = 距离;
+          上次双指中点 = 中点;
+        }
+      });
+
+      function 指针离开(e) {
+        指针集合.delete(e.pointerId);
+        if (指针集合.size < 2) { 上次双指距离 = 0; 上次双指中点 = null; }
+      }
+      视口.addEventListener('pointerup', 指针离开);
+      视口.addEventListener('pointercancel', 指针离开);
+
+      // 滚轮缩放：以鼠标位置为焦点（与 1 页一致）
+      视口.addEventListener('wheel', (e) => {
+        if (!遮罩.classList.contains('显示')) return;
+        e.preventDefault();
+        const 位置 = 视口.getBoundingClientRect();
+        const 系数 = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+        缩放到(状态.scale * 系数, e.clientX - 位置.left, e.clientY - 位置.top);
+      }, { passive: false });
+
+      document.getElementById('裁剪取消').addEventListener('click', 关闭弹窗);
+
+      document.getElementById('裁剪确认').addEventListener('click', () => {
+        const vp = 视口尺寸();
+        if (vp <= 0 || !图片宽) return;
+
+        // 取景框左上角在原始图片坐标系里的位置
+        let sx = -状态.tx / 状态.scale;
+        let sy = -状态.ty / 状态.scale;
+        let 源宽 = vp / 状态.scale;
+        let 源高 = vp / 状态.scale;
+
+        // —— 源矩形边界钳制：按宽/高分别硬钳制，确保 drawImage 永远落在图片像素内，
+        //   绝不会裁到图片之外（与 1 页一致，满足「裁剪不可超出边界」）。
+        const 原宽 = 图片宽, 原高 = 图片高;
+        sx = Math.max(0, Math.min(原宽 - 1, sx));
+        sy = Math.max(0, Math.min(原高 - 1, sy));
+        源宽 = Math.min(原宽 - sx, 源宽);
+        源高 = Math.min(原高 - sy, 源高);
+
+        // 头像输出圆形透明 PNG（480，省存储）
+        const 尺寸 = 480;
+        const 画布 = document.createElement('canvas');
+        画布.width = 尺寸;
+        画布.height = 尺寸;
+        const 笔 = 画布.getContext('2d');
+        笔.save();
+        笔.beginPath();
+        笔.arc(尺寸 / 2, 尺寸 / 2, 尺寸 / 2, 0, Math.PI * 2);
+        笔.closePath();
+        笔.clip();
+        笔.drawImage(裁剪图, sx, sy, 源宽, 源高, 0, 0, 尺寸, 尺寸);
+        笔.restore();
+
+        const dataURL = 画布.toDataURL('image/png');
+        当前头像DataURL = dataURL;
+        图片.src = dataURL;
+        图片.style.display = 'block';
+        框.classList.add('has-image');
+        关闭弹窗();
+      });
+    })();
+
+    /* ============================================================
+     *  2. 自定义日历
+     * ============================================================ */
+    (function () {
+      const 遮罩 = document.getElementById('日历遮罩');
+      const 年月 = document.getElementById('日历年月');
+      const 网格 = document.getElementById('日历网格');
+      const 显示框 = document.getElementById('生日显示框');
+      const 隐藏框 = document.getElementById('生日隐藏框');
+      const 确定 = document.getElementById('日历确定');
+      let 视图年, 视图月, 选中日期 = null;
+
+      function 打开() {
+        遮罩.classList.add('显示');
+        const 初始 = (隐藏框.value && 解析日期(隐藏框.value)) || new Date();
+        视图年 = 初始.getFullYear(); 视图月 = 初始.getMonth();
+        渲染();
+      }
+      window.打开日历 = 打开;
+
+      // 日期比较统一走 YYYY-MM-DD 键：
+      //   直接用 getTime() 会被时分秒干扰 —— 点「今日」时 new Date() 带当前时刻，
+      //   而格子里的日期是当天零点，两者永远不相等，选中态就不会高亮。
+      function 日期键(日期) {
+        if (!日期) return '';
+        return 日期.getFullYear() + '-' +
+               String(日期.getMonth() + 1).padStart(2, '0') + '-' +
+               String(日期.getDate()).padStart(2, '0');
+      }
+
+      // 按【本地时区】解析 YYYY-MM-DD。
+      //   不能直接 new Date('2000-01-01') —— ISO 字符串会被当成 UTC 午夜，
+      //   在 UTC-x 的时区里会退回到前一天（1999-12-31），生日凭空差一天。
+      function 解析日期(值) {
+        const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(值 == null ? '' : 值).trim());
+        if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+        const d = new Date(值);
+        return isNaN(d.getTime()) ? null : d;
+      }
+
+      function 渲染() {
+        年月.textContent = 视图年 + ' 年 ' + (视图月 + 1) + ' 月';
+        网格.innerHTML = '';
+        const 首日 = new Date(视图年, 视图月, 1).getDay();
+        const 天数 = new Date(视图年, 视图月 + 1, 0).getDate();
+        const 上月天数 = new Date(视图年, 视图月, 0).getDate();
+        const 今天键 = 日期键(new Date());
+        const 单元格 = [];
+        for (let i = 首日 - 1; i >= 0; i--) {
+          单元格.push({ 日: 上月天数 - i, 其他月: true });
+        }
+        for (let d = 1; d <= 天数; d++) {
+          单元格.push({ 日: d, 其他月: false });
+        }
+        const 余 = (7 - 单元格.length % 7) % 7;
+        for (let i = 1; i <= 余; i++) {
+          单元格.push({ 日: i, 其他月: true });
+        }
+        单元格.forEach(格 => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = '日历日期' + (格.其他月 ? ' 其他月' : '');
+          btn.textContent = 格.日;
+          const 该日期 = new Date(视图年, 视图月, 格.日);
+          if (!格.其他月) {
+            if (日期键(该日期) === 今天键) {
+              btn.classList.add('今天');
+            }
+            if (选中日期 && 日期键(选中日期) === 日期键(该日期)) btn.classList.add('选中');
+            btn.addEventListener('click', () => {
+              选中日期 = 该日期;
+              确定.disabled = false;
+              渲染();
+            });
+          }
+          if (格.其他月) {
+            btn.addEventListener('click', () => {
+              视图月 += 格.日 > 15 ? 1 : -1;
+              if (视图月 > 11) { 视图月 = 0; 视图年++; }
+              if (视图月 < 0) { 视图月 = 11; 视图年--; }
+              渲染();
+            });
+          }
+          网格.appendChild(btn);
+        });
+      }
+
+      document.getElementById('日历上一月').addEventListener('click', () => { 视图月--; if (视图月 < 0) { 视图月 = 11; 视图年--; } 渲染(); });
+      document.getElementById('日历下一月').addEventListener('click', () => { 视图月++; if (视图月 > 11) { 视图月 = 0; 视图年++; } 渲染(); });
+      // 「今日」：跳回当月并选中当天。选中日期归一到当天零点，保证与格子的日期键一致、能高亮。
+      document.getElementById('日历今日').addEventListener('click', () => {
+        const 此刻 = new Date();
+        视图年 = 此刻.getFullYear();
+        视图月 = 此刻.getMonth();
+        选中日期 = new Date(此刻.getFullYear(), 此刻.getMonth(), 此刻.getDate());
+        确定.disabled = false;
+        渲染();
+      });
+
+      确定.addEventListener('click', () => {
+        if (!选中日期) return;
+        const y = 选中日期.getFullYear();
+        const m = String(选中日期.getMonth() + 1).padStart(2, '0');
+        const d = String(选中日期.getDate()).padStart(2, '0');
+        const 值 = y + '-' + m + '-' + d;
+        隐藏框.value = 值;
+        显示框.value = 值;
+        关闭();
+      });
+
+      function 关闭() { 遮罩.classList.remove('显示'); }
+      遮罩.addEventListener('click', (e) => { if (e.target === 遮罩) 关闭(); });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && 遮罩.classList.contains('显示')) 关闭(); });
+
+      // 对外接口
+      window.设生日 = function (值) {
+        隐藏框.value = 值 || '';
+        显示框.value = 值 || '';
+        选中日期 = 值 ? 解析日期(值) : null;
+      };
+      window.取生日 = function () { return 隐藏框.value; };
+
+      // 绑定点击
+      显示框.addEventListener('click', 打开);
+      document.querySelector('.生日日历图标').addEventListener('click', (e) => { e.stopPropagation(); 打开(); });
+    })();
+
+    /* ============================================================
+     *  3. 性格标签
+     * ============================================================ */
+    (function () {
+      const 容器 = document.getElementById('标签输入区');
+      let 标签数组 = [];
+      const 最大 = 12;
+
+      function 渲染() {
+        容器.innerHTML = '';
+        标签数组.forEach((标签, 序号) => {
+          const el = document.createElement('span');
+          el.className = '标签';
+          el.textContent = 标签;
+          const 删 = document.createElement('span');
+          删.className = '标签删除';
+          删.innerHTML = '<svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg>';
+          删.addEventListener('click', () => { 标签数组.splice(序号, 1); 渲染(); });
+          el.appendChild(删);
+          容器.appendChild(el);
+        });
+        if (标签数组.length < 最大) {
+          const 输入 = document.createElement('input');
+          输入.className = '标签输入框';
+          输入.placeholder = '添加标签';
+          输入.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); 添加(输入.value); 输入.value = ''; }
+          });
+          const 添加按钮 = document.createElement('button');
+          添加按钮.className = '标签添加按钮';
+          添加按钮.type = 'button';
+          添加按钮.innerHTML = '<svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>添加';
+          添加按钮.addEventListener('click', () => { 添加(输入.value); 输入.value = ''; });
+          容器.appendChild(输入);
+          容器.appendChild(添加按钮);
+        }
+      }
+
+      function 添加(文本) {
+        文本 = (文本 || '').trim();
+        if (!文本) return;
+        if (标签数组.includes(文本)) { showToast('标签已存在'); return; }
+        if (标签数组.length >= 最大) { showToast('最多 12 个标签'); return; }
+        标签数组.push(文本);
+        渲染();
+      }
+
+      window.取性格标签 = function () { return 标签数组.slice(); };
+      window.设性格标签 = function (数组) { 标签数组 = (数组 || []).slice(); 渲染(); };
+    })();
+
+    /* ============================================================
+     *  4. 人物属性（多选标签）
+     * ============================================================ */
+    (function () {
+      const 容器 = document.getElementById('属性标签组');
+      const 可选 = ['人类', '魔', '妖', '精灵', '人鱼', '外星生物', '兽人', '水仙'];
+      可选.forEach(名 => {
+        const el = document.createElement('span');
+        el.className = '属性标签';
+        el.textContent = 名;
+        el.addEventListener('click', () => el.classList.toggle('选中'));
+        容器.appendChild(el);
+      });
+      window.取属性 = function () {
+        return Array.from(容器.querySelectorAll('.属性标签.选中')).map(el => el.textContent.trim());
+      };
+      window.设属性 = function (数组) {
+        const set = Array.isArray(数组) ? new Set(数组.map(String)) : new Set();
+        Array.from(容器.querySelectorAll('.属性标签')).forEach(el => {
+          el.classList.toggle('选中', set.has(el.textContent.trim()));
+        });
+      };
+    })();
+
+    /* ============================================================
+     *  5. 音色配置跳转（按 id 分桶）
+     * ============================================================ */
+    (function () {
+      const 配置键 = '音色配置';   // 分桶键通过 URL id 动态决定，见 打开音色配置()
+
+      window.读音色配置 = function (id) {
+        const 键 = id ? 音色键(id) : 音色键(当前ID);
+        try {
+          const 值 = JSON.parse(读(键));
+          if (值 && typeof 值 === 'object' && 值.已启用) return 值;
+        } catch (e) {}
+        return null;
+      };
+
+      window.设音色配置 = function (值) {
+        const 状态El = document.getElementById('音色配置状态');
+        const 名称El = document.getElementById('音色配置名称');
+        if (!状态El || !名称El) return;
+        const 启用 = 值 && 值.已启用;
+        if (启用) {
+          状态El.textContent = '已启用';
+          状态El.classList.add('已启用');
+          const 名称 = 值.音色 || 值.自定义ID || '自定义音色';
+          名称El.textContent = (值.性别 ? 值.性别 + ' · ' : '') + 名称;
+        } else {
+          状态El.textContent = '未启用';
+          状态El.classList.remove('已启用');
+          名称El.textContent = '点击前往配置音色';
+        }
+      };
+
+      window.取音色配置 = function () {
+        // 优先读当前 id 的分桶（新建时为「音色配置_临时」，与 3 页一致）
+        const 分桶 = window.读音色配置(当前ID);
+        if (分桶) return 分桶;
+        // 兜底读旧全局键 —— 但新建模式不能兜底：
+        //   全局键里存的是上一位联系人的配置，兜底会让新联系人白白继承别人的音色。
+        if (当前模式 !== 'new') {
+          try { const 值 = JSON.parse(读('音色配置')); if (值 && 值.已启用) return 值; } catch (e) {}
+        }
+        return { 已启用: false };
+      };
+
+      // 点击「音色配置」行：带 id 跳转到 3 页；新建时显式带 mode=new，
+      // 让 3 页能区分「全新联系人」与「直接打开」，从而不继承上一位联系人的全局配置。
+      window.打开音色配置 = function () {
+        const 目标页 = '3_YINSEAPI.html';
+        const 串 = new URLSearchParams();
+        if (当前ID) 串.set('id', 当前ID);
+        else 串.set('mode', 'new');
+        // ★ 透传来源：3 页返回时要带着它回到 2 页，不然 2 页再返回就丢了来源
+        if (来源参数) 串.set('from', 来源参数);
+        location.href = 目标页 + '?' + 串.toString();
+      };
+
+      // 实时刷新（storage 事件 + 页面可见性）
+      window.addEventListener('storage', (e) => {
+        if (e.key === 音色键(当前ID) || e.key === '音色配置') {
+          window.设音色配置(window.读音色配置(当前ID));
+        }
+      });
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) window.设音色配置(window.读音色配置(当前ID));
+      });
+    })();
+
+    /* ============================================================
+     *  6. 保存 / 载入 / 返回（核心：ID 分桶 + 索引同步）
+     * ============================================================ */
+    (function () {
+      const 存储键 = 详情键(当前ID);   // 仅用于兜底/迁移，实际保存按 id
+
+      /* ---------- 收集当前表单 ---------- */
+      function 收集() {
+        const 性别选中 = document.querySelector('input[name="性别"]:checked');
+        return {
+          昵称: document.getElementById('昵称输入').value.trim(),
+          生日: window.取生日(),
+          身高: document.getElementById('身高输入').value.trim(),
+          身份: document.getElementById('身份输入').value.trim(),
+          性别: 性别选中 ? 性别选中.value : '',
+          世界观: document.getElementById('世界观输入').value,
+          人物信息: document.getElementById('人物信息输入').value,
+          性格标签: window.取性格标签(),
+          人物属性: window.取属性(),
+          音色: window.取音色配置(),   // 来自 3_YINSEAPI（按 id 分桶）
+        };
+      }
+
+      /* ---------- 保存：新增 / 更新 ---------- */
+      window.保存信息 = function () {
+        const 数据 = 收集();
+        if (!数据.昵称) { showToast('请先填写昵称'); return; }
+
+        let id = 当前ID;
+        let 列表 = 读索引() || [];
+
+        if (当前模式 === 'new') {
+          // 新建：生成 id，追加进索引
+          id = 生成ID();
+          列表.push({
+            id,
+            名称: 数据.昵称,
+            备注: '',
+            头像: 当前头像DataURL || 占位头像,
+            消息: '',
+            时间: ''
+          });
+        } else {
+          // 编辑：就地更新索引中对应项（以详情为准）
+          const 项 = 列表.find(项 => 项.id === id);
+          if (项) {
+            项.名称 = 数据.昵称;
+            if (当前头像DataURL) 项.头像 = 当前头像DataURL;   // 仅在换过头像时更新
+          } else {
+            // id 在索引里找不到（异常情况），按新建补录
+            列表.push({ id, 名称: 数据.昵称, 备注: '', 头像: 当前头像DataURL || 占位头像, 消息: '', 时间: '' });
+          }
+        }
+        写索引(列表);
+
+        // 详情按 id 分桶写入
+        const 最终详情键 = 详情键(id);
+        写(最终详情键, JSON.stringify(数据));
+
+        // 头像单独存（按 id 分桶）：
+        //   • 本次换过头像（当前头像DataURL 有值）→ 直接写分桶键
+        //   • 未换头像（编辑载入后直接保存）→ 若分桶键尚不存在，用索引项/占位图兜底补写，
+        //     保证「编辑联系人」再次载入时 读(头像键(id)) 必然有值（需求：编辑必读头像）
+        if (当前头像DataURL) {
+          写(头像键(id), 当前头像DataURL);
+        } else if (!读(头像键(id))) {
+          const 索引项 = 查找索引项(id);
+          写(头像键(id), (索引项 && 索引项.头像) || 占位头像);
+        }
+
+        // 音色配置：3 页可能写的是分桶键 音色配置_<id>，这里确保 gender 同步
+        const 音色 = 数据.音色;
+        if (音色 && 音色.已启用) {
+          音色.性别 = 数据.性别 || 音色.性别 || '';
+          写(音色键(id), JSON.stringify(音色));
+        }
+        // 新建落定后清掉临时键：否则下一位新联系人一进音色页就会读到上一位的配置
+        if (当前模式 === 'new') 删('音色配置_临时');
+
+        // 兼容旧全局键：若为新建且当前没有全局「好友信息」，写一份以便旧代码可读
+        // （不影响新架构，仅兜底）
+        // ★ 必须限定 new：原先漏了模式判断，编辑已有联系人时也会抢先占据这个键，
+        //   导致之后所有新建联系人再也写不进来，兜底形同虚设。
+        if (当前模式 === 'new' && !读('好友信息')) 写('好友信息', JSON.stringify(数据));
+
+        showToast(当前模式 === 'new' ? '已添加联系人' : '已保存');
+        // ★ 回来源页，而不是一律回通讯录
+        setTimeout(() => { location.href = 返回页; }, 700);
+      };
+
+      /* ---------- 返回 ---------- */
+      window.返回上一页 = function () {
+        // 新建中途取消：不写入任何数据
+        location.href = 返回页;
+      };
+
+      /* ---------- 载入（编辑模式） ---------- */
+      function 载入详情(id, 索引项) {
+        let 数据 = null;
+        try { 数据 = JSON.parse(读(详情键(id))); } catch (e) {}
+        // 已存的是空壳（无昵称/无世界观/无人物信息/无标签）→ 允许内置档案接管
+        if (是空壳(数据)) 数据 = null;
+        // 兜底：内置角色档案（昵称优先，id 兜底）—— 保证默认角色一进来就有完整人设
+        if (!数据) {
+          const 档 = 查档案(id, 索引项 && 索引项.名称);
+          if (档) {
+            数据 = Object.assign({}, 档);
+            // ★ 档案若是「按 id 兜底」命中的（昵称没对上任何角色），昵称要保留
+            //   用户在通讯录里改过的名字，只补人设 —— 否则把「林彦」改成「张三」后，
+            //   一进编辑就被档案的昵称吞回「林彦」，用户的改名白改。
+            //   而「按昵称命中」（含旧名别名）时昵称以档案为准，旧名才得以迁移成新名。
+            const 索引名 = 索引项 && String(索引项.名称 || '').trim();
+            if (索引名 && !昵称命中档案(索引名)) 数据.昵称 = 索引名;
+          }
+        }
+        // 兜底：读旧全局键「好友信息」
+        if (!数据) { try { 数据 = JSON.parse(读('好友信息')); } catch (e) {} }
+        if (!数据) return null;
+
+        document.getElementById('昵称输入').value = 数据.昵称 || '';
+        window.设生日(数据.生日 || '');
+        document.getElementById('身高输入').value = 数据.身高 || '';
+        document.getElementById('身份输入').value = 数据.身份 || '';
+        if (数据.性别) {
+          const 单选 = document.querySelector(`input[name="性别"][value="${数据.性别}"]`);
+          if (单选) 单选.checked = true;
+        }
+        document.getElementById('世界观输入').value = 数据.世界观 || '';
+        document.getElementById('人物信息输入').value = 数据.人物信息 || '';
+        if (Array.isArray(数据.人物属性)) window.设属性(数据.人物属性);
+        if (Array.isArray(数据.性格标签)) window.设性格标签(数据.性格标签);
+        // 音色：优先分桶，次用内嵌字段
+        const 分桶音色 = window.读音色配置(id);
+        window.设音色配置(分桶音色 || (数据.音色 && 数据.音色.已启用 ? 数据.音色 : window.读音色配置()));
+        return 数据;
+      }
+
+      function 载入头像(id, 索引项) {
+        // 读取优先级：① 分桶头像（用户裁剪上传的）→ ② 索引项里存的头像 → ③ 占位图
+        const src = 读(头像键(id)) || (索引项 && 索引项.头像) || '';
+        const 图片 = document.getElementById('头像图片');
+        const 框 = document.getElementById('头像上传框');
+        if (src) {
+          当前头像DataURL = src;
+          图片.src = src; 图片.style.display = 'block';
+          框.classList.add('has-image');
+        } else {
+          // 无任何头像：显式回落占位图，避免残留上一位联系人的头像
+          当前头像DataURL = '';
+          图片.src = 占位头像;
+          图片.style.display = 'block';
+          框.classList.add('has-image');
+        }
+      }
+
+      // ===== 初始化 =====
+      迁移旧数据();
+
+      if (当前模式 === 'edit' && 当前ID) {
+        document.getElementById('页面标题').textContent = '编辑联系人';
+        const 索引项 = 查找索引项(当前ID);
+        if (索引项) {
+          // 载入详情（昵称等以详情为准；索引项作为补充，同时用于按昵称匹配内置档案）
+          载入详情(当前ID, 索引项);
+          载入头像(当前ID, 索引项);
+          // 若详情里没有昵称，用索引里的
+          const 昵称输入 = document.getElementById('昵称输入');
+          if (!昵称输入.value && 索引项.名称) 昵称输入.value = 索引项.名称;
+        } else {
+          // id 无效：退化到新建
+          showToast('联系人不存在，已转为新建');
+          转为新建模式();
+        }
+      } else {
+        // 新建模式：空白草稿（含一个默认音色占位）
+        document.getElementById('页面标题').textContent = '添加好友';
+        window.设音色配置(window.读音色配置());   // 可能为空，显示「未启用」
+      }
+    })();
+
+    /* ============================================================
+     *  辅助：把当前上下文切到「新建」
+     *  （仅在 edit 但找不到对应 id 时调用）
+     * ============================================================ */
+    function 转为新建模式() {
+      // 清掉 id 相关，避免误写
+      const 新URL = location.pathname + '?mode=new';
+      history.replaceState(null, '', 新URL);
+      // 简单刷新当前页以重置状态（保留已填内容由用户重填）
+      location.reload();
+    }
+  </script>
+
+<script>
+/* ===== 主题背景：读全局设置（由 9_zhutishezhi.html 写入，全站共用）=====
+   ① 自定义：直接用 dataURL
+   ② 内置：按索引取 2【图片】 下的主题（0 = 默认主题背景，1~5 = 背景1~背景5）
+      扩展名自动探测 png → jpg → jpeg → webp，素材不是 png 也显示得出来
+   ③ 没设置 / 索引为 0：保持页面里写死的默认图，不动 */
+(function () {
+    var 图 = document.querySelector('.主题背景图片');
+    if (!图) return;
+    var 存 = null;
+    try { 存 = JSON.parse(localStorage.getItem('主题背景') || 'null'); } catch (e) {}
+    if (!存) return;
+
+    if (存.源 === '自定义' && 存.数据) { 图.src = 存.数据; return; }
+
+    if (存.源 === '默认' && typeof 存.索引 === 'number' && 存.索引 > 0) {
+        var 名 = '背景' + 存.索引;
+        var 候选 = ['png', 'jpg', 'jpeg', 'webp'], 序 = 0;
+        图.addEventListener('error', function () {
+            if (序 < 候选.length) 图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+        });
+        图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+    }
+})();
+</script>
+    <script id="全局音乐">
+/* =============================================================================
+ * 全局音乐.js —— 跨页续播（4 页开始播，切到任何界面都不中断）
+ *
+ * 【为什么需要它】
+ *   4_tongxun 有自己的完整 UI 播放器，但 HTML 页面之间是真跳转：
+ *   一离开 4 页，整个 JS 上下文连同 <audio> 一起被销毁，音乐就断了。
+ *   本脚本在每个页面挂一个「无界面的续播器」：进来先读存档，
+ *   如果上次是在播，就重建 audio、跳回原秒数、接着播。
+ *
+ * 【它不是什么】
+ *   不做 UI、不做播放列表 —— 那些是 4 页播放器的职责。
+ *   这里只负责「让声音不断」，回到 4 页时完整播放器会自然接手。
+ *
+ * 【契约（改这里前务必看）】
+ *   ① 存档键 '音乐播放状态'，格式必须与 4 页 保存状态() 完全一致：
+ *        { id, 名, 类型:'默认'|'上传', 时间:秒, 播放中:bool }
+ *      —— 两边都写、都读同一个键，才能无缝交接。
+ *   ② ★ 让位规则：页面里若存在 #音乐播放器（4 页的），本脚本【完全不启动】。
+ *      否则两个 audio 会同时出声。这是唯一的冲突防线，别删。
+ *   ③ 上传曲目在 IndexedDB：库名 '音乐库' / 表名 '音频'（与 4 页同名同结构）。
+ *
+ * 【让位 API（其它页面调用）】
+ *   window.全局音频.暂停('语音消息') / .恢复('语音消息')
+ *   window.全局音频.暂停('语音通话') / .恢复('语音通话')
+ *   7 页播语音条、14 页通话时分别调用，避免两路声音叠在一起。
+ *   ★ 用【原因集合】而非布尔：语音与通话可能重叠，布尔会在语音播完时
+ *     把仍在通话中的音乐放出来。全部原因解除才恢复。
+ *   ★ 会记住「占用前是否在播」，本来没放音乐就不会凭空启动。
+ *
+ * 【自动播放限制】
+ *   浏览器会拦「没有用户手势的自动播放」。被拦时不报错、不打断，
+ *   改为监听页面上第一次 pointerdown / touchstart 补播一次
+ *   —— 与 4 页 尝试续播() 同一个套路。
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    const 状态键 = '音乐播放状态';
+    const 目录候选 = ['1【音乐】/', '../1【音乐】/'];   // 与 4 页一致：html 挪进子文件夹时自动回退
+    const 库名 = '音乐库';
+    const 表名 = '音频';
+
+    /* ---------------------------------------------------------------
+     * IndexedDB：只为拿上传曲目的 blob，读不到就 null（调用方兜底）
+     * ------------------------------------------------------------- */
+    function 打开库() {
+        return new Promise((完成, 失败) => {
+            if (typeof indexedDB === 'undefined') return 失败(new Error('无 IndexedDB'));
+            let 请求;
+            try { 请求 = indexedDB.open(库名, 1); } catch (e) { return 失败(e); }
+            请求.onupgradeneeded = () => {
+                const db = 请求.result;
+                if (!db.objectStoreNames.contains(表名)) db.createObjectStore(表名, { keyPath: 'id' });
+            };
+            请求.onsuccess = () => 完成(请求.result);
+            请求.onerror = () => 失败(请求.error || new Error('打开失败'));
+        });
+    }
+
+    function 读一条(id) {
+        return 打开库().then(db => new Promise((完成, 失败) => {
+            const 事务 = db.transaction(表名, 'readonly');
+            const 请求 = 事务.objectStore(表名).get(id);
+            请求.onsuccess = () => 完成(请求.result || null);
+            请求.onerror = () => 失败(请求.error);
+        })).catch(() => null);
+    }
+
+    /* ---------------------------------------------------------------
+     * 存档读写
+     * ------------------------------------------------------------- */
+    function 读状态() {
+        try { return JSON.parse(localStorage.getItem(状态键) || 'null'); } catch (e) { return null; }
+    }
+
+    function 写状态(存) {
+        try { localStorage.setItem(状态键, JSON.stringify(存)); } catch (e) {}
+    }
+
+    /* ---------------------------------------------------------------
+     * 主体
+     * ------------------------------------------------------------- */
+    const 元素id = '全局音乐播放器';
+
+    /* =========================================================================
+     * ★ 占用管理：语音消息 / 语音通话 出声时，背景音乐让位
+     *
+     *   为什么用 Set 而不是布尔：两种占用可能重叠（比如播着语音条的同时来电话）。
+     *   布尔会在「语音播完恢复」时把仍在通话中的音乐也放出来。
+     *   记成「原因集合」，全部解除才恢复 —— 这是这类让位逻辑的正确写法。
+     *
+     *   另外要记住【占用前是否在播】：如果本来就没放音乐，
+     *   语音播完不该把音乐凭空启动。
+     * ======================================================================= */
+    const 占用 = new Set();
+    let 占用前在播 = false;
+    /* ★ 声明在 IIFE 顶层而不是 启动() 内：页尾探针 __全局音乐.补播中() 要访问它，
+         放在 启动() 里的话外层作用域取不到（TDZ / 未定义）。 */
+    let 补播中 = false;
+
+    /** 4 页让位时，操作目标是它自己的 #音乐播放器；否则是本脚本建的那个 */
+    function 取音频() {
+        return document.getElementById('音乐播放器') || document.getElementById(元素id);
+    }
+
+    const 全局音频 = {
+        /** 暂停背景音乐（可重入；同一原因重复调用无害） */
+        暂停(原因) {
+            const 键 = 原因 || '未命名';
+            if (占用.size === 0) {
+                const a = 取音频();
+                占用前在播 = !!a && !a.paused;
+            }
+            占用.add(键);
+            const a = 取音频();
+            if (a && !a.paused) { try { a.pause(); } catch (e) {} }
+        },
+
+        /** 解除某个占用；全部解除且占用前在播 → 恢复播放 */
+        恢复(原因) {
+            const 键 = 原因 || '未命名';
+            if (!占用.has(键)) return;
+            占用.delete(键);
+            if (占用.size > 0) return;              // 还有别的占用（比如仍在通话）
+            if (!占用前在播) return;                 // 本来就没在播 → 不凭空启动
+            const a = 取音频();
+            if (a && a.paused) {
+                const 试 = a.play();
+                if (试 && typeof 试.catch === 'function') 试.catch(() => {});
+            }
+        },
+
+        /** 强制清掉所有占用（异常路径兜底用） */
+        清除() { 占用.clear(); },
+
+        占用中() { return 占用.size > 0; },
+        占用表() { return Array.from(占用); },
+        是否在播() { const a = 取音频(); return !!a && !a.paused; },
+    };
+    /* ★ 无论让不让位都挂上：让位时它操作的是 4 页自己的播放器，
+       调用方（语音条 / 通话）不必关心自己在哪个页面。 */
+    window.全局音频 = 全局音频;
+
+    function 启动() {
+        /* ★★ 让位：4 页有完整播放器（#音乐播放器），这里绝不能再建第二个 audio。
+              注意 7 页那个是 #语音播放器（点语音消息用的），与本脚本无关，
+              各播各的，所以【只】认 #音乐播放器 这一个 id。 */
+        if (document.getElementById('音乐播放器')) return;
+        /* 防重：脚本万一被引了两次，也只建一个 audio */
+        if (document.getElementById(元素id)) return;
+
+        const 存 = 读状态();
+        // 没在播（或压根没播过）→ 安静退出，不建元素、不占资源
+        if (!存 || !存.播放中 || !存.名) return;
+
+        const 音频 = document.createElement('audio');
+        音频.id = 元素id;
+        音频.dataset.全局音乐 = '1';        // 便于排查 / 测试定位
+        音频.preload = 'metadata';
+        document.body.appendChild(音频);
+
+        const 目标 = Math.max(0, Number(存.时间) || 0);
+        let 已定位 = false;      // loadedmetadata 只处理一次（切目录会重复触发）
+        let 目录序 = 0;
+        let 上传链接 = '';
+
+        /* 跳回上次的秒数再播。★ 先 seek 后 play：
+           否则会从 0 开始，听感上像换了一首。 */
+        音频.addEventListener('loadedmetadata', () => {
+            if (已定位) return;
+            已定位 = true;
+            const 长 = isFinite(音频.duration) ? 音频.duration : 0;
+            try {
+                音频.currentTime = 长 > 0
+                    ? Math.min(目标, Math.max(0, 长 - 0.3))
+                    : 目标;
+            } catch (e) {}
+            续播();
+        });
+
+        /* 目录逐个试：与 4 页 载入当前目录() 同款（文件缺失 / 解码失败都能兜住） */
+        音频.addEventListener('error', () => {
+            if (目录序 < 目录候选.length) {
+                音频.src = encodeURI(目录候选[目录序++] + 存.名);
+            }
+        });
+
+        /* 播完了：不自动切歌（这里没有播放列表），停住并把状态改成「没在播」，
+           免得下一次进任意页面又从头播一遍。 */
+        音频.addEventListener('ended', () => {
+            写状态({ id: 存.id, 名: 存.名, 类型: 存.类型, 时间: 0, 播放中: false });
+        });
+
+        /* ---- 进度回写：下一页（或回到 4 页）要靠它续上 ---- */
+        function 存一次(播放中) {
+            写状态({
+                id: 存.id, 名: 存.名, 类型: 存.类型,
+                时间: 音频.currentTime || 0,
+                /* ★ 同 4 页那个坑：只认真正的布尔。pagehide / beforeunload
+                     的监听器会把 Event 对象当第一个参数传进来，
+                     `播放中 === undefined` 拦不住它 → `!!Event` = true。 */
+                播放中: typeof 播放中 !== 'boolean' ? !音频.paused : 播放中,
+            });
+        }
+        // 播着的时候每秒存一次，中途崩溃 / 强杀也不会丢太多
+        setInterval(() => { if (!音频.paused) 存一次(true); }, 1000);
+        // 离开页面再存一次：跳转、切后台、关闭三种情况都覆盖
+        const 存一次同步 = () => 存一次();
+        window.addEventListener('pagehide', 存一次同步);
+        window.addEventListener('beforeunload', 存一次同步);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') 存一次同步();
+        });
+
+        /* ------------------------------------------------------------
+         * 补播：浏览器会拦「没有用户手势」的自动播放，这是硬限制，绕不过去。
+         *   策略：
+         *     ① 直接播；
+         *     ② 被拒 → 【持续】监听用户交互，直到真的播起来才撤监听；
+         *     ③ 期间挂一个可见小条，告诉用户「点一下继续」。
+         *   ★★ 关键：不能用 once:true。那一次点击可能仍被拒（或音频还没
+         *      ready），失败后就再也没机会了 —— 表现正是「切过去没声音」。
+         *      必须【成功才停】，这是这段里最要紧的一句。
+         * ---------------------------------------------------------- */
+        const 事件名 = ['pointerdown', 'touchstart', 'click', 'keydown'];
+
+        function 撤补播() {
+            if (!补播中) return;
+            补播中 = false;
+            事件名.forEach(n => document.removeEventListener(n, 试补播, true));
+            document.removeEventListener('visibilitychange', 见可见);
+            收提示();
+        }
+
+        function 见可见() {
+            if (document.visibilityState === 'visible') 试补播();
+        }
+
+        function 试补播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();                     // 老浏览器无 Promise：当成功处理
+        }
+
+        /** 被拦 → 挂持续监听 + 显示提示条 */
+        function 展提示() {
+            if (!补播中) {
+                补播中 = true;
+                /* ★ 捕获阶段：冒泡阶段可能被页面自己的 stopPropagation 吃掉 */
+                事件名.forEach(n => document.addEventListener(n, 试补播, true));
+                document.addEventListener('visibilitychange', 见可见);
+            }
+            亮提示();
+        }
+
+        /* ---- 提示条：自建，不依赖各页自己的 toast 实现（各页不统一）---- */
+        let 提示元素 = null;
+        function 亮提示() {
+            if (提示元素) return;
+            const 条 = document.createElement('div');
+            条.id = '全局音乐提示';
+            条.textContent = '♪ 音乐已就绪，点一下继续播放';
+            // 样式全内联 + !important：各页 CSS 互不统一，不这样会被盖掉 / 变形
+            条.setAttribute('style', [
+                'position:fixed', 'left:50%', 'bottom:16px', 'transform:translateX(-50%)',
+                'z-index:99999', 'padding:8px 14px', 'border-radius:999px',
+                'background:rgba(28,28,32,0.86)', 'color:#fff', 'font-size:12px',
+                'letter-spacing:.3px', 'pointer-events:none',
+                'box-shadow:0 4px 16px rgba(0,0,0,.2)',
+                'transition:opacity .25s', 'opacity:0',
+                'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif',
+            ].join('!important;') + '!important');
+            document.body.appendChild(条);
+            提示元素 = 条;
+            setTimeout(() => { if (提示元素) 提示元素.style.opacity = '1'; }, 20);
+            setTimeout(收提示, 8000);           // 8 秒后自动收，别一直杵着
+        }
+        function 收提示() {
+            if (!提示元素) return;
+            const 条 = 提示元素;
+            提示元素 = null;
+            条.style.opacity = '0';
+            setTimeout(() => { if (条.parentNode) 条.parentNode.removeChild(条); }, 300);
+        }
+
+        function 续播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { 展提示(); return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();
+        }
+
+        // 播起来了就收掉提示（例如用户从别处触发了播放）
+        音频.addEventListener('play', 撤补播);
+
+        /* ---- 载入：上传曲目走 blob URL，其余按目录拼路径 ---- */
+        function 载入默认() {
+            目录序 = 0;
+            音频.src = encodeURI(目录候选[目录序++] + 存.名);
+        }
+
+        if (存.类型 === '上传' && 存.id) {
+            读一条(存.id).then(记录 => {
+                if (记录 && 记录.数据) {
+                    try {
+                        上传链接 = URL.createObjectURL(记录.数据);
+                        音频.src = 上传链接;
+                        return;
+                    } catch (e) {}
+                }
+                载入默认();          // 读不到（库被清了）→ 退回按名字找文件
+            });
+        } else {
+            载入默认();
+        }
+    }
+
+    /* DOM 就绪再跑：4 页的 #音乐播放器 也在 body 里，早了会误判成「没有」
+       → 两个 audio 同时出声。 */
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    // 测试 / 调试用：暴露一个只读探针，验证脚本确实起来了
+    window.__全局音乐 = {
+        键: 状态键,
+        元素id: 元素id,
+        让位条件: () => !!document.getElementById('音乐播放器'),
+        占用: 全局音频.占用表,
+        补播中: () => 补播中,
+    };
+})();
+    </script>
+
+    <script id="软键盘适配">
+/* =============================================================================
+ * 软键盘适配.js —— 让输入框在手机输入法弹出时始终可见
+ *
+ * 【要解决什么】
+ *   全站每个页面都是「100dvh 的固定容器 + 中间滚动区 + 底部固定区」的结构：
+ *       .手机主题背景容器 { height: 100dvh; overflow: hidden; display:flex; column }
+ *         ├── .顶部固定区      (flex-shrink: 0)
+ *         ├── .手机界面内容    (flex: 1; overflow-y: auto)  ← 唯一滚动区
+ *         └── .底部输入区      (flex-shrink: 0)
+ *   容器高度被 100dvh 硬锁死，所以输入法一弹出：
+ *     · iOS Safari：layout viewport 不变，visual viewport 被键盘吃掉一块，
+ *       容器高度纹丝不动 → 底部输入区整个被键盘盖住。
+ *     · Android Chrome（resize 模式）：innerHeight 会变小，dvh 跟着变，
+ *       容器自动变矮 → 但只在部分浏览器成立，换一家就打回原形。
+ *   同一套代码在两家表现不一样，正是这次要抹平的东西。
+ *
+ * 【核心思路：只信 visualViewport】
+ *   键盘高度 = 基准布局高 − visualViewport.height − visualViewport.offsetTop
+ *   然后把容器高度直接设成 visualViewport.height，并整体平移 offsetTop。
+ *   —— 不猜机型、不猜浏览器，只认「当前真正能看见的这块矩形」，
+ *      所以 iOS / Android / 各家输入法走的都是同一条代码路径。
+ *
+ *   ★ 基准布局高不是实时的 window.innerHeight —— 这是最容易写错的一处。
+ *     Android 键盘弹出时 innerHeight 本身就会变小，拿实时 innerHeight 去减
+ *     visualViewport.height 会得到 0，等于永远检测不到键盘（典型的「安卓没效果」）。
+ *     基准只在「确认键盘收起」时更新，弹出期间冻结。
+ *
+ * 【两件事一起做，缺一个都会漏】
+ *   ① 容器自适应：解决「底部常驻输入区被盖」（7 页的 .底部输入区）
+ *   ② 焦点滚入可视：解决「滚动区里的输入框被盖」（2 / 11 / 19~22 页的表单）
+ *
+ * 【四条硬约束（需求点，改动时别破）】
+ *   ① 不抖动：高度变化 ≤ 2px 不写样式；所有写入合并进一帧 rAF；
+ *              键盘判定阈值 80px，避开地址栏收起、工具栏隐藏这类假信号。
+ *   ② 不丢焦点：全程不 blur、不重建 DOM、不动 tabindex、不改 DOM 顺序。
+ *   ③ 不整页滚：绝不用 window.scrollTo 做补偿 —— 那会让 iOS 整个 layout
+ *      viewport 上移，顶部被切掉且松手后弹不回来。只改容器高度与
+ *      「最近的可滚动祖先」的 scrollTop。
+ *   ④ 不硬编码机型：没有 User-Agent 判断，没有 iOS / Android 分支。
+ *
+ * 【降级】
+ *   没有 visualViewport（老浏览器）→ 退回 window.resize + innerHeight 比对。
+ *   再不行 → 什么都不做，恢复成页面原本的样子（不会更糟）。
+ *
+ * 【对外 API（业务与测试用）】
+ *   window.软键盘.是否弹出()   → bool
+ *   window.软键盘.键盘高度()   → 像素
+ *   window.软键盘.校准()       → 立刻重算一次（比如弹窗关闭后）
+ *   window.软键盘.让位(px)     → 声明额外的底部占用（如自定义输入条），
+ *                                容器会再让出这么多高度
+ *   window.软键盘._喂(...)     → 测试用：直接喂一个可视区矩形
+ *
+ * ★★ 本文件是唯一源。改完跑：python3 同步软键盘.py
+ *     （与 全局音乐.js / 音频助手.js 同一套内联同步机制）
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    /* ------------------------------------------------------------------
+     * 常量
+     * ---------------------------------------------------------------- */
+    const 容器类名 = '手机主题背景容器';
+    const 弹出阈值 = 80;      // 键盘高度超过它才认定「键盘弹出了」
+    const 变化阈值 = 2;       // 高度变化不超过它就不写样式，省掉无意义的重排
+    const 底部余量 = 14;      // 焦点元素与可视区底部之间留的呼吸位
+    const 顶部余量 = 8;
+    const 类名键已弹 = '软键盘已弹出';
+    const 样式id = '软键盘适配样式';
+
+    const vv = (typeof window.visualViewport === 'object' && window.visualViewport)
+        ? window.visualViewport : null;
+
+    /* ------------------------------------------------------------------
+     * 状态
+     * ---------------------------------------------------------------- */
+    let 容器 = null;
+    let 基准高 = 0;           // 「键盘收起时」的布局高度，弹出期间冻结
+    let 已弹出 = false;
+    let 上次可视高 = 0;
+    let 上次偏移 = 0;
+    let 帧 = 0;               // rAF 句柄，用于合并
+    let 额外让位 = 0;         // window.软键盘.让位() 设进来的额外高度
+    let 焦点 = null;          // 最近一次聚焦的输入元素
+
+    /* ------------------------------------------------------------------
+     * 小工具
+     * ---------------------------------------------------------------- */
+    function 是输入框(el) {
+        if (!el || !el.tagName) return false;
+        const 标签 = el.tagName.toLowerCase();
+        return 标签 === 'input' || 标签 === 'textarea'
+            || (标签 === 'div' && el.isContentEditable === true);
+    }
+
+    /** 找容器：优先类名（全站统一），退化到 body 的唯一直接子元素 */
+    function 找容器() {
+        if (容器 && 容器.isConnected) return 容器;
+        容器 = document.querySelector('.' + 容器类名) || null;
+        return 容器;
+    }
+
+    function 可视顶() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+    function 可视底() {
+        if (vv) return (vv.offsetTop || 0) + vv.height;
+        return (window.scrollY || 0) + window.innerHeight;
+    }
+    function 当前可视高() { return vv ? vv.height : window.innerHeight; }
+    function 当前偏移() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+
+    /* ------------------------------------------------------------------
+     * 注入样式：只在键盘弹出时生效，收起即移除，不留残余
+     * ---------------------------------------------------------------- */
+    function 装样式() {
+        if (document.getElementById(样式id)) return;
+        const 样式 = document.createElement('style');
+        样式.id = 样式id;
+        /* ★ 用 class 而不是内联 style：收起时摘掉 class 就能还原，
+             不用逐个记住页面原本的 align-items / padding 是多少。 */
+        样式.textContent =
+            'html.' + 类名键已弹 + ' body{align-items:flex-start !important;}\n' +
+            'html.' + 类名键已弹 + ' .' + 容器类名 + '{padding-bottom:0 !important;}\n';
+        (document.head || document.documentElement).appendChild(样式);
+    }
+
+    /* ------------------------------------------------------------------
+     * 核心：把容器压到「真正看得见」的那块矩形里
+     * ---------------------------------------------------------------- */
+    function 应用() {
+        const 盒 = 找容器();
+        if (!盒) return;
+
+        const 可视高 = 当前可视高();
+        const 偏移 = 当前偏移();
+
+        if (!基准高) 基准高 = window.innerHeight || 可视高;
+
+        /* ★★ 键盘高度：基准 − 可视高 − 偏移。
+              基准在弹出期间冻结，所以 Android 那种「innerHeight 自己也会缩」
+              的情况同样算得出来。 */
+        let 键盘 = 基准高 - 可视高 - 偏移;
+        if (键盘 < 0) 键盘 = 0;
+
+        const 弹出 = 键盘 > 弹出阈值;
+
+        /* 状态没变、且可视高几乎没动 → 什么都不做（防抖动的第①道闸） */
+        if (弹出 === 已弹出
+            && Math.abs(可视高 - 上次可视高) <= 变化阈值
+            && Math.abs(偏移 - 上次偏移) <= 变化阈值) {
+            if (弹出) 校准焦点();
+            return;
+        }
+
+        上次可视高 = 可视高;
+        上次偏移 = 偏移;
+        已弹出 = 弹出;
+
+        const 根 = document.documentElement;
+        const 体 = document.body;
+
+        if (弹出) {
+            装样式();
+            if (!根.classList.contains(类名键已弹)) 根.classList.add(类名键已弹);
+
+            /* 容器高度 = 真正看得见的高度（再减去业务声明的额外让位） */
+            const 目标高 = Math.max(120, 可视高 - 额外让位);
+            盒.style.height = 目标高 + 'px';
+            盒.style.minHeight = 目标高 + 'px';
+            /* 跟着 visualViewport 的偏移走（iOS 页面被上推时靠它归位） */
+            盒.style.transform = (偏移 ? 'translateY(' + 偏移 + 'px)' : '');
+
+            /* ③ 不整页滚：只在系统确实把 layout viewport 推走时温和拉回原点。
+                 阈值 4px 是为了不跟正常的 1~2px 抖动打架。 */
+            if (!vv && (window.pageYOffset || 0) > 4 && 体) {
+                const 体溢出 = window.getComputedStyle(体).overflow;
+                if (体溢出 === 'hidden' || 体溢出 === 'clip') window.scrollTo(0, 0);
+            }
+        } else {
+            /* 收起：摘 class、清掉所有内联改动，回到页面原本的样子 */
+            if (根.classList.contains(类名键已弹)) 根.classList.remove(类名键已弹);
+            盒.style.height = '';
+            盒.style.minHeight = '';
+            盒.style.transform = '';
+            /* 收起时基准可以放心更新 —— 此刻量到的就是「无键盘」的真实高度 */
+            基准高 = window.innerHeight || 可视高;
+        }
+
+        /* 容器变矮之后滚动区也变矮，焦点元素可能又落到可视区外 → 再校准一次 */
+        校准焦点();
+    }
+
+    /** 合并到下一帧，避免 resize 连发时反复读写布局 */
+    function 排一帧() {
+        if (帧) return;
+        const 跑 = window.requestAnimationFrame
+            || function (f) { return setTimeout(f, 16); };
+        帧 = 跑(function () { 帧 = 0; 应用(); });
+    }
+
+    /* ------------------------------------------------------------------
+     * ② 焦点滚入可视
+     * ---------------------------------------------------------------- */
+    /** 向上找最近一个「真的能滚」的祖先 */
+    function 找滚动祖先(el) {
+        let n = el ? el.parentElement : null;
+        while (n && n !== document.body && n !== document.documentElement) {
+            const 样式 = window.getComputedStyle(n);
+            const 可滚 = /(auto|scroll|overlay)/.test(样式.overflowY || '');
+            if (可滚 && n.scrollHeight > n.clientHeight + 1) return n;
+            n = n.parentElement;
+        }
+        return null;
+    }
+
+    /**
+     * 把焦点元素挪进可视区。
+     * ★ 只动「最近滚动祖先」的 scrollTop —— 不动 window，避免整页位移。
+     * ★ 元素本来就在可视区里时什么都不做，不会没事乱滚。
+     */
+    function 校准焦点() {
+        const el = 焦点 || document.activeElement;
+        if (!是输入框(el)) return;
+        if (!找容器()) return;
+
+        const 矩形 = el.getBoundingClientRect();
+        if (!矩形.height && !矩形.top) return;      // 还没布局完，跳过
+
+        const 下界 = 可视底() - 底部余量;
+        const 上界 = 可视顶() + 顶部余量;
+
+        let 差 = 0;
+        if (矩形.bottom > 下界) 差 = 矩形.bottom - 下界;
+        else if (矩形.top < 上界) 差 = 矩形.top - 上界;
+
+        if (Math.abs(差) <= 1) return;
+
+        const 滚动父 = 找滚动祖先(el);
+        /* 不在任何滚动区里（比如底部常驻输入区）：容器已经跟着可视区收缩了，
+           理论上不该再超出。真超了也不碰 window —— 那才是抖动的根源。 */
+        if (滚动父) 滚动父.scrollTop += 差;
+    }
+
+    /* ------------------------------------------------------------------
+     * 事件
+     * ---------------------------------------------------------------- */
+    function 起监听() {
+        /* ① visualViewport：键盘弹出 / 收起 / 页面被上推 都走这里，逐帧跟随 */
+        if (vv) {
+            vv.addEventListener('resize', 排一帧);
+            vv.addEventListener('scroll', function () {
+                /* iOS 键盘弹出时若系统把 layout viewport 推走，offsetTop 会变，
+                   这里同步一下容器位置，避免顶部被切掉。 */
+                if (已弹出) 排一帧();
+            });
+        }
+
+        /* ② 降级：没有 visualViewport 的老浏览器，靠 window.resize */
+        window.addEventListener('resize', 排一帧);
+
+        /* ③ 方向变化：横竖屏切换后基准要重测 */
+        window.addEventListener('orientationchange', function () {
+            基准高 = 0;
+            setTimeout(排一帧, 120);
+        });
+
+        /* ④ 聚焦：记下元素并立刻校准一次。
+             键盘弹出是异步动画（iOS 约 250ms），所以这里先做一次「预防性」校准，
+             随后 visualViewport.resize 每帧触发时会继续跟着校准到最终位置。 */
+        document.addEventListener('focusin', function (e) {
+            if (!是输入框(e.target)) return;
+            焦点 = e.target;
+            /* 先测一次基准：此刻键盘还没弹，量到的正是无键盘高度 */
+            if (!已弹出) 基准高 = window.innerHeight || 当前可视高();
+            setTimeout(排一帧, 30);
+        }, true);
+
+        /* ⑤ 失焦：键盘收起由 resize 兜底，这里只清记录、不主动改布局
+              —— 切到下一个输入框时 focusin 会立刻接手，不会闪。 */
+        document.addEventListener('focusout', function (e) {
+            if (焦点 === e.target) 焦点 = null;
+        }, true);
+
+        /* ⑥ 切后台回来：尺寸可能已经变了 */
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) { 基准高 = 0; 排一帧(); }
+        });
+    }
+
+    /* ------------------------------------------------------------------
+     * 启动
+     * ---------------------------------------------------------------- */
+    function 启动() {
+        找容器();
+        基准高 = window.innerHeight || 当前可视高();
+        上次可视高 = 当前可视高();
+        上次偏移 = 当前偏移();
+        起监听();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    /* ------------------------------------------------------------------
+     * 对外 API
+     * ---------------------------------------------------------------- */
+    window.软键盘 = {
+        是否弹出: function () { return 已弹出; },
+        键盘高度: function () {
+            return Math.max(0, 基准高 - 当前可视高() - 当前偏移());
+        },
+        校准: 排一帧,
+        /** 业务声明额外的底部占用（例如自定义输入条），容器再让出这么多 */
+        让位: function (px) {
+            额外让位 = Math.max(0, Number(px) || 0);
+            排一帧();
+        },
+        /**
+         * 测试用：直接喂一个「可视区矩形」，跳过真实环境探测。
+         *   _喂(可视高, 偏移, 布局高)
+         * · 有 visualViewport：改它的 height / offsetTop
+         * · 没有（降级路径）：改 window.innerHeight
+         * 两种都是测试替身走的同一条代码路径，所以断言对真机同样成立。
+         */
+        _喂: function (可视高, 偏移, 布局高) {
+            if (typeof 布局高 === 'number' && 布局高 > 0) 基准高 = 布局高;
+            上次可视高 = -999;                 // 强制通过变化阈值，保证一定重算
+            if (vv) {
+                try {
+                    vv.height = 可视高;
+                    vv.offsetTop = 偏移 || 0;
+                } catch (e) {
+                    Object.defineProperty(vv, 'height', { value: 可视高, configurable: true });
+                    Object.defineProperty(vv, 'offsetTop', { value: 偏移 || 0, configurable: true });
+                }
+            } else {
+                try { window.innerHeight = 可视高; } catch (e) {
+                    Object.defineProperty(window, 'innerHeight',
+                        { value: 可视高, configurable: true, writable: true });
+                }
+            }
+            应用();
+            return true;
+        },
+        /** 测试用：当前容器被压到的高度（内联样式里的值，未设置则空串） */
+        _容器高: function () {
+            const 盒 = 找容器();
+            return 盒 ? (盒.style.height || '') : null;
+        },
+    };
+})();
+    </script>
+</body>
+</html>

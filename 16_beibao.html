@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<!--
+    16_beibao —— 我的背包（往期扭蛋）
+
+    入口：15_tuku 顶栏【背包小图标】 → 16_beibao.html?from=15
+    出口：★ 从哪进来就回哪去 —— ?from=<页号> 优先，其次 document.referrer，都没有才回 15 页。
+
+    ★ 只展示【已扭到的】：数据来自 localStorage「图库已获」（15 页写入）。
+        未扭到的不在这儿出现 —— 那是 15 页预览区的事。
+
+    ★ 分类栏多一个「全部」：默认全部，看的是四个分类的合集。
+      「全部」模式下格子带分类前缀（如「男头 No.3」），免得看不出是哪类的。
+
+    ★ 一行两列；每格可【保存到本地】（<a download>）。
+      保存是这里唯一的动作 —— 15 页的预览区明确不能点、不能放大。
+
+    ★★ 分类配置与 15 页【必须一致】：显示「情侣」但目录是 4【情头】，别写反。
+        改一边就要改另一边。
+-->
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>我的背包</title>
+    <style>
+        :root {
+            --ink: #333336;
+            --ink-2: #55555a;
+            --ink-3: #7a7a80;
+            --ink-4: #a4a4aa;
+            --accent: #4a4a50;
+            --accent-soft: #d5d5d9;
+            --accent-hi: #e6e6ea;
+            --accent-ink: #35353b;
+            --panel: 255, 255, 255;
+            --line: 158, 158, 162;
+            --shade: 48, 48, 54;
+            --glass: 0.5;
+            --blur: 14px;
+            --blur-sm: 8px;
+            /* ★★ hex 变量【不能】进 rgba() —— 会被整条丢弃。
+               要带透明度就用下面这批数值形式的伴生变量。 */
+            --ink-rgb: 51, 51, 54;
+            --ink-2-rgb: 85, 85, 90;
+            --ink-3-rgb: 122, 122, 128;
+            --ink-4-rgb: 164, 164, 170;
+            --accent-rgb: 74, 74, 80;
+            --accent-soft-rgb: 213, 213, 217;
+            --accent-hi-rgb: 230, 230, 234;
+            --accent-ink-rgb: 53, 53, 59;
+            /* 扭蛋机彩球用的低饱和色（不跳，跟灰白底协调） */
+            --球1: #b98d8d;
+            --球2: #8d9bb9;
+            --球3: #a9b58d;
+            --球4: #b9a98d;
+            --球5: #9d8db9;
+        }
+
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html { overflow-x: hidden; touch-action: pan-y; }
+
+        body {
+            background-color: #dadae0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--ink-2);
+            display: flex; justify-content: center; align-items: center;
+            min-height: 100dvh; overflow: hidden; overflow-x: hidden;
+            touch-action: pan-y;
+        }
+
+        .手机主题背景容器 {
+            width: 100%; max-width: 430px; height: 100dvh; min-height: 100dvh;
+            position: relative; background-color: transparent;
+            overflow: hidden; overflow-x: hidden;
+            box-shadow: 0 0 20px rgba(var(--shade), 0.16);
+            display: flex; flex-direction: column; touch-action: pan-y;
+            padding-top: env(safe-area-inset-top, 0px);
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+            padding-left: env(safe-area-inset-left, 0px);
+            padding-right: env(safe-area-inset-right, 0px);
+        }
+        @media (max-width: 430px) { .手机主题背景容器 { box-shadow: none; } }
+
+        .主题背景图片 {
+            width: 100%; height: 100dvh; object-fit: cover; object-position: center;
+            display: block; position: absolute; top: 0; left: 0; z-index: 0; pointer-events: none;
+        }
+        .全局白色遮罩 {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(var(--panel), 0.45); z-index: 1; pointer-events: none;
+        }
+
+        /* ===== 顶部：返回 /「背包」/ 右侧占位 ===== */
+        .顶部固定区 {
+            position: relative; z-index: 10;
+            background: rgba(var(--panel), var(--glass));
+            -webkit-backdrop-filter: blur(var(--blur)) saturate(150%) brightness(1.06);
+            backdrop-filter: blur(var(--blur)) saturate(150%) brightness(1.06);
+            flex-shrink: 0;
+            padding-bottom: clamp(6px, 2vw, 10px);
+        }
+        .顶部导航栏 {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: clamp(10px, 3vw, 14px) clamp(12px, 4vw, 16px) clamp(6px, 2vw, 8px);
+            font-size: clamp(12px, 3.5vw, 14px); color: var(--ink-2); position: relative;
+        }
+        .返回按钮 {
+            cursor: pointer; width: clamp(24px, 7vw, 28px); height: clamp(24px, 7vw, 28px);
+            display: flex; justify-content: center; align-items: center; border-radius: 50%;
+            flex-shrink: 0; -webkit-tap-highlight-color: transparent;
+        }
+        .返回按钮 svg { width: clamp(17px, 4.8vw, 20px); height: clamp(17px, 4.8vw, 20px); fill: none; stroke: var(--ink); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+        .中间标题 {
+            position: absolute; left: 50%; transform: translateX(-50%);
+            font-size: clamp(15px, 4.3vw, 17px); font-weight: 600; color: var(--ink);
+            letter-spacing: .5px; white-space: nowrap;
+        }
+        .右侧占位 { width: clamp(24px, 7vw, 28px); flex-shrink: 0; }
+
+        /* ===== 分类栏（多一个「全部」） ===== */
+        .分类栏 {
+            display: flex; gap: clamp(6px, 1.8vw, 9px);
+            padding: 0 clamp(12px, 4vw, 16px) clamp(8px, 2.4vw, 11px);
+            overflow-x: auto; scrollbar-width: none;
+        }
+        .分类栏::-webkit-scrollbar { display: none; }
+        .分类钮 {
+            flex: 1 1 0; min-width: fit-content;
+            padding: clamp(7px, 2vw, 9px) clamp(10px, 3vw, 14px);
+            border-radius: 999px;
+            border: 1px solid rgba(var(--line), 0.28);
+            background: rgba(var(--panel), 0.5);
+            color: var(--ink-3); font-size: clamp(12px, 3.4vw, 13.5px);
+            text-align: center; cursor: pointer; white-space: nowrap;
+            -webkit-tap-highlight-color: transparent; transition: all .18s;
+        }
+        .分类钮.选中 {
+            background: rgba(var(--accent-rgb), 0.92);
+            border-color: rgba(var(--accent-rgb), 0.92);
+            color: #fff; font-weight: 600;
+        }
+
+        .手机界面内容 {
+            flex: 1; overflow-y: auto; overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+            position: relative; z-index: 5;
+            padding-bottom: clamp(20px, 6vw, 32px);
+        }
+
+        /* ===== 背包网格：一行两列 ===== */
+        .背包网格 {
+            display: grid; grid-template-columns: repeat(2, 1fr);
+            gap: clamp(9px, 2.6vw, 13px);
+            padding: 0 clamp(12px, 4vw, 16px) clamp(10px, 3vw, 14px);
+        }
+        .背包格 {
+            border-radius: clamp(11px, 3.2vw, 14px); overflow: hidden;
+            background: rgba(var(--panel), 0.55);
+            border: 1px solid rgba(var(--line), 0.22);
+            box-shadow: 0 2px 10px rgba(var(--shade), 0.08);
+        }
+        /* ★★★ 完整显示、不裁切：按原图比例自适应。
+             用 1:1 + cover 会裁掉头像的上下部分，看着就「不全」。 */
+        .背包图 {
+            width: 100%; height: auto; object-fit: contain; display: block;
+            background: rgba(var(--line), 0.08);
+            min-height: clamp(90px, 26vw, 130px);   /* 加载中先占位，避免跳动 */
+        }
+        /* ★★★ 同 15 页：一对占满整行，左一张右一张（不塞进半行里） */
+        .背包格.成対 { grid-column: 1 / -1; }
+
+        .背包对 {
+            display: flex; flex-direction: row; flex-wrap: nowrap;
+            gap: clamp(4px, 1.2vw, 6px);
+            align-items: stretch;
+        }
+        /* ★★ 同 15 页：min-width:0 必须有，否则宽图撑开、第二张被裁掉 */
+        .背包对 .背包图 {
+            flex: 1 1 0; min-width: 0; width: auto;
+            min-height: clamp(110px, 32vw, 160px);
+            border-radius: clamp(8px, 2.3vw, 11px);
+        }
+
+        .背包标 {
+            display: flex; align-items: center; justify-content: space-between; gap: 6px;
+            padding: clamp(5px, 1.5vw, 7px) clamp(7px, 2vw, 9px);
+        }
+        .背包名 {
+            font-size: clamp(10.5px, 3vw, 12px); color: var(--ink); font-weight: 600;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .背包存 {
+            display: flex; align-items: center; gap: 3px; flex-shrink: 0;
+            font-size: clamp(10px, 2.8vw, 11.5px); color: var(--ink-3);
+            cursor: pointer; -webkit-tap-highlight-color: transparent;
+        }
+        .背包存:active { transform: scale(.92); }
+        .背包存 svg { width: clamp(12px, 3.4vw, 14px); height: clamp(12px, 3.4vw, 14px); fill: none; stroke: var(--ink-2); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+
+        .背包空 {
+            margin: clamp(14px, 4vw, 20px) clamp(12px, 3.4vw, 16px);
+            padding: clamp(24px, 7vw, 36px) clamp(12px, 3.4vw, 16px);
+            border-radius: clamp(12px, 3.4vw, 15px);
+            border: 1px dashed rgba(var(--line), 0.4);
+            text-align: center; color: var(--ink-3);
+            font-size: clamp(12px, 3.4vw, 13.5px); line-height: 1.8;
+        }
+
+        .统计条 {
+            padding: clamp(10px, 3vw, 14px) clamp(14px, 4vw, 18px) clamp(8px, 2.2vw, 10px);
+            font-size: clamp(11.5px, 3.3vw, 13px); color: var(--ink-3);
+        }
+        .统计条 b { color: var(--ink); font-weight: 600; }
+
+        .toast {
+            position: absolute; left: 50%; bottom: clamp(60px, 17vw, 84px);
+            transform: translateX(-50%) translateY(8px);
+            background: rgba(var(--shade), 0.86); color: #fff;
+            padding: clamp(8px, 2.3vw, 10px) clamp(14px, 4vw, 18px);
+            border-radius: 999px; font-size: clamp(12px, 3.4vw, 13.5px);
+            opacity: 0; pointer-events: none; transition: opacity .24s, transform .24s;
+            z-index: 400; white-space: nowrap;
+        }
+        .toast.显示 { opacity: 1; transform: translateX(-50%) translateY(0); }
+    </style>
+</head>
+<body>
+    <div class="手机主题背景容器">
+        <img class="主题背景图片" id="主题背景图片" src="2【图片】/默认主题背景.png" alt="手机主题背景占位图">
+        <div class="全局白色遮罩"></div>
+
+        <div class="顶部固定区">
+            <div class="顶部导航栏">
+                <div class="返回按钮" id="返回按钮" role="button" aria-label="返回">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <polyline points="15 6 9 12 15 18"></polyline>
+                    </svg>
+                </div>
+                <div class="中间标题">我的背包</div>
+                <div class="右侧占位"></div>
+            </div>
+            <div class="分类栏" id="分类栏"></div>
+        </div>
+
+        <div class="手机界面内容">
+            <div class="统计条" id="统计条"></div>
+            <div class="背包网格" id="背包网格"></div>
+        </div>
+
+        <div class="toast" id="toast"></div>
+    </div>
+
+    <script>
+        /* ===== 0. 轻提示 ===== */
+        const toast = document.getElementById('toast');
+        let toast计时器 = null;
+        function 提示(消息) {
+            toast.textContent = 消息;
+            toast.classList.add('显示');
+            clearTimeout(toast计时器);
+            toast计时器 = setTimeout(() => toast.classList.remove('显示'), 1900);
+        }
+
+        /* ============================================================
+         * 1. 分类配置 —— ★★ 必须与 15_tuku 完全一致
+         * ============================================================ */
+        const 分类表 = [
+            { 键: '男头', 名: '男头', 目录: '4【男头】/', 数量: 6,  每扭: 1 },
+            { 键: '女头', 名: '女头', 目录: '4【女头】/', 数量: 50, 每扭: 1 },
+            { 键: '双女', 名: '双女', 目录: '4【双女】/', 数量: 42, 每扭: 2 },
+            { 键: '情头', 名: '情侣', 目录: '4【情头】/', 数量: 34, 每扭: 2 },
+        ];
+        const 全部键 = '全部';
+
+        const 扩展候选 = ['png', 'jpg', 'jpeg', 'webp'];
+
+        /** 按 png → jpg → jpeg → webp 逐个试。
+            ★ onerror 用【赋值】：addEventListener 每次重试会多叠一个监听器。 */
+        function 探图(img, 基础) {
+            let 第几 = 0;
+            img.onerror = () => {
+                if (第几 < 扩展候选.length) {
+                    img.src = 基础 + '.' + 扩展候选[第几++];
+                    return;
+                }
+                img.onerror = null;
+                img.removeAttribute('src');
+            };
+            img.src = 基础 + '.' + 扩展候选[第几++];
+        }
+
+        /* ============================================================
+         * 2. 读「图库已获」（15 页写入）
+         * ============================================================ */
+        const 已获键 = '图库已获';
+
+        function 读已获() {
+            try {
+                const o = JSON.parse(localStorage.getItem(已获键) || '{}');
+                return (o && typeof o === 'object') ? o : {};
+            } catch (e) { return {}; }
+        }
+
+        const 已获 = 读已获();
+        const 分类栏 = document.getElementById('分类栏');
+        const 背包网格 = document.getElementById('背包网格');
+        const 统计条 = document.getElementById('统计条');
+
+        let 当前 = 全部键;
+
+        /* ---- 分类按钮：全部 + 四个分类 ---- */
+        [{ 键: 全部键, 名: '全部' }].concat(分类表).forEach(项 => {
+            const 钮 = document.createElement('button');
+            钮.className = '分类钮' + (项.键 === 当前 ? ' 选中' : '');
+            钮.type = 'button';
+            钮.textContent = 项.名;
+            钮.dataset.分类 = 项.键;
+            钮.addEventListener('click', () => {
+                当前 = 项.键;
+                Array.from(分类栏.children).forEach(b =>
+                    b.classList.toggle('选中', b.dataset.分类 === 项.键));
+                渲染();
+            });
+            分类栏.appendChild(钮);
+        });
+
+        /* ============================================================
+         * 3. 渲染：一行两列，只放已扭到的
+         * ============================================================ */
+        const 下载图标 = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+            + '<path d="M12 3.5v11"></path>'
+            + '<polyline points="7.6 10.4 12 14.8 16.4 10.4"></polyline>'
+            + '<path d="M4.5 17.5v1.6a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-1.6"></path></svg>';
+
+        function 单元图片号(类, 单元) {
+            if (类.每扭 === 2) return [单元 * 2 - 1, 单元 * 2];
+            return [单元];
+        }
+        function 图片基础(类, 号) { return 类.目录 + 号; }
+
+        function 建图(类, 号) {
+            const img = document.createElement('img');
+            img.className = '背包图';
+            img.alt = 类.名 + ' ' + 号;
+            img.dataset.号 = String(号);
+            探图(img, 图片基础(类, 号));
+            return img;
+        }
+
+        function 渲染() {
+            const 目标 = 当前 === 全部键 ? 分类表 : 分类表.filter(c => c.键 === 当前);
+            const 条目 = [];
+            目标.forEach(类 => {
+                const 表 = 已获[类.键];
+                if (!Array.isArray(表)) return;
+                表.slice().sort((a, b) => a - b).forEach(单元 => 条目.push({ 类, 单元 }));
+            });
+
+            /* 统计 */
+            let 总计 = 0;
+            分类表.forEach(c => {
+                const 表 = 已获[c.键];
+                if (Array.isArray(表)) 总计 += 表.length;
+            });
+            const 单位 = (当前 !== 全部键 && 目标[0].每扭 === 2) ? '对' : '件';
+            统计条.innerHTML = '共收藏 <b>' + 条目.length + '</b> '
+                + (当前 === 全部键 ? '件' : 单位)
+                + (当前 === 全部键 ? '　（全部 ' + 总计 + ' 件）' : '');
+
+            背包网格.innerHTML = '';
+
+            if (!条目.length) {
+                const 空 = document.createElement('div');
+                空.className = '背包空';
+                空.innerHTML = (当前 === 全部键
+                    ? '背包还是空的<br><span style="font-size:.92em">去扭蛋机扭一次就能收进来</span>'
+                    : '这个分类还没有收藏<br><span style="font-size:.92em">回扭蛋机扭扭看</span>');
+                背包网格.appendChild(空);
+                return;
+            }
+
+            条目.forEach(({ 类, 单元 }) => {
+                const 号组 = 单元图片号(类, 单元);
+                const 格 = document.createElement('div');
+                格.className = '背包格';
+                格.dataset.分类 = 类.键;
+                格.dataset.单元 = String(单元);
+
+                if (类.每扭 === 2) {
+                    /* ★ 成対：格子横跨整行，一对的两张左右并排 */
+                    格.classList.add('成対');
+                    const 对 = document.createElement('div');
+                    对.className = '背包对';
+                    号组.forEach(n => 对.appendChild(建图(类, n)));
+                    格.appendChild(对);
+                } else {
+                    格.appendChild(建图(类, 号组[0]));
+                }
+
+                const 标 = document.createElement('div');
+                标.className = '背包标';
+                const 名 = document.createElement('span');
+                名.className = '背包名';
+                /* ★ 「全部」模式下带分类前缀，否则看不出是哪一类 */
+                名.textContent = (当前 === 全部键 ? 类.名 + ' ' : '')
+                    + (类.每扭 === 2 ? ('第 ' + 单元 + ' 对') : ('No.' + 号组[0]));
+                const 存 = document.createElement('span');
+                存.className = '背包存';
+                存.innerHTML = 下载图标 + '保存';
+                存.setAttribute('role', 'button');
+                存.addEventListener('click', () => 保存组(类, 号组));
+                标.appendChild(名);
+                标.appendChild(存);
+                格.appendChild(标);
+
+                背包网格.appendChild(格);
+            });
+        }
+
+        /* ============================================================
+         * 4. 保存：<a download>
+         * ============================================================ */
+        function 当前扩展(img) {
+            const m = /\.([a-zA-Z0-9]+)$/.exec(img.getAttribute('src') || '');
+            return m ? m[1] : 'png';
+        }
+
+        function 保存一个(路径, 文件名) {
+            const a = document.createElement('a');
+            a.href = 路径;
+            a.download = 文件名;
+            a.rel = 'noopener';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => a.remove(), 100);
+        }
+
+        function 保存组(类, 号组) {
+            号组.forEach(n => {
+                const img = 背包网格.querySelector(
+                    '.背包格[data-分类="' + 类.键 + '"] .背包图[data-号="' + n + '"]');
+                const 路径 = (img && img.getAttribute('src')) || (图片基础(类, n) + '.png');
+                保存一个(路径, 类.目录.replace(/\//g, '_') + n + '.' + 当前扩展(img));
+            });
+            提示(号组.length > 1 ? '已保存 ' + 号组.length + ' 张' : '已保存');
+        }
+
+        /* ============================================================
+         * 5. 返回：?from= → referrer → 15 页
+         * ============================================================ */
+        const 来源 = new URLSearchParams(location.search).get('from') || '';
+        const 返回表 = { '15': '15_tuku.html', '1': '1_shouyeyulan.html' };
+
+        function 推来源页() {
+            try {
+                const 名 = (document.referrer || '').split('/').pop().split('?')[0];
+                return /^\d+_.+\.html$/.test(名) ? 名 : '';
+            } catch (e) { return ''; }
+        }
+
+        const 返回页 = 返回表[来源] || 推来源页() || '15_tuku.html';
+        window.取返回页 = () => 返回页;
+        document.getElementById('返回按钮').addEventListener('click', () => {
+            location.href = 返回页;
+        });
+
+        /* ============================================================
+         * 6. 启动
+         * ============================================================ */
+        渲染();
+
+        /* 测试与调试探针 */
+        window.背包 = {
+            分类表: 分类表,
+            取当前: () => 当前,
+            切分类: k => {
+                const 钮 = Array.from(分类栏.children).find(b => b.dataset.分类 === k);
+                if (钮) 钮.dispatchEvent(new Event('click'));
+            },
+            条目数: () => 背包网格.querySelectorAll('.背包格').length,
+        };
+    </script>
+
+    <script id="全局音乐">
+/* =============================================================================
+ * 全局音乐.js —— 跨页续播（4 页开始播，切到任何界面都不中断）
+ *
+ * 【为什么需要它】
+ *   4_tongxun 有自己的完整 UI 播放器，但 HTML 页面之间是真跳转：
+ *   一离开 4 页，整个 JS 上下文连同 <audio> 一起被销毁，音乐就断了。
+ *   本脚本在每个页面挂一个「无界面的续播器」：进来先读存档，
+ *   如果上次是在播，就重建 audio、跳回原秒数、接着播。
+ *
+ * 【它不是什么】
+ *   不做 UI、不做播放列表 —— 那些是 4 页播放器的职责。
+ *   这里只负责「让声音不断」，回到 4 页时完整播放器会自然接手。
+ *
+ * 【契约（改这里前务必看）】
+ *   ① 存档键 '音乐播放状态'，格式必须与 4 页 保存状态() 完全一致：
+ *        { id, 名, 类型:'默认'|'上传', 时间:秒, 播放中:bool }
+ *      —— 两边都写、都读同一个键，才能无缝交接。
+ *   ② ★ 让位规则：页面里若存在 #音乐播放器（4 页的），本脚本【完全不启动】。
+ *      否则两个 audio 会同时出声。这是唯一的冲突防线，别删。
+ *   ③ 上传曲目在 IndexedDB：库名 '音乐库' / 表名 '音频'（与 4 页同名同结构）。
+ *
+ * 【让位 API（其它页面调用）】
+ *   window.全局音频.暂停('语音消息') / .恢复('语音消息')
+ *   window.全局音频.暂停('语音通话') / .恢复('语音通话')
+ *   7 页播语音条、14 页通话时分别调用，避免两路声音叠在一起。
+ *   ★ 用【原因集合】而非布尔：语音与通话可能重叠，布尔会在语音播完时
+ *     把仍在通话中的音乐放出来。全部原因解除才恢复。
+ *   ★ 会记住「占用前是否在播」，本来没放音乐就不会凭空启动。
+ *
+ * 【自动播放限制】
+ *   浏览器会拦「没有用户手势的自动播放」。被拦时不报错、不打断，
+ *   改为监听页面上第一次 pointerdown / touchstart 补播一次
+ *   —— 与 4 页 尝试续播() 同一个套路。
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    const 状态键 = '音乐播放状态';
+    const 目录候选 = ['1【音乐】/', '../1【音乐】/'];   // 与 4 页一致：html 挪进子文件夹时自动回退
+    const 库名 = '音乐库';
+    const 表名 = '音频';
+
+    /* ---------------------------------------------------------------
+     * IndexedDB：只为拿上传曲目的 blob，读不到就 null（调用方兜底）
+     * ------------------------------------------------------------- */
+    function 打开库() {
+        return new Promise((完成, 失败) => {
+            if (typeof indexedDB === 'undefined') return 失败(new Error('无 IndexedDB'));
+            let 请求;
+            try { 请求 = indexedDB.open(库名, 1); } catch (e) { return 失败(e); }
+            请求.onupgradeneeded = () => {
+                const db = 请求.result;
+                if (!db.objectStoreNames.contains(表名)) db.createObjectStore(表名, { keyPath: 'id' });
+            };
+            请求.onsuccess = () => 完成(请求.result);
+            请求.onerror = () => 失败(请求.error || new Error('打开失败'));
+        });
+    }
+
+    function 读一条(id) {
+        return 打开库().then(db => new Promise((完成, 失败) => {
+            const 事务 = db.transaction(表名, 'readonly');
+            const 请求 = 事务.objectStore(表名).get(id);
+            请求.onsuccess = () => 完成(请求.result || null);
+            请求.onerror = () => 失败(请求.error);
+        })).catch(() => null);
+    }
+
+    /* ---------------------------------------------------------------
+     * 存档读写
+     * ------------------------------------------------------------- */
+    function 读状态() {
+        try { return JSON.parse(localStorage.getItem(状态键) || 'null'); } catch (e) { return null; }
+    }
+
+    function 写状态(存) {
+        try { localStorage.setItem(状态键, JSON.stringify(存)); } catch (e) {}
+    }
+
+    /* ---------------------------------------------------------------
+     * 主体
+     * ------------------------------------------------------------- */
+    const 元素id = '全局音乐播放器';
+
+    /* =========================================================================
+     * ★ 占用管理：语音消息 / 语音通话 出声时，背景音乐让位
+     *
+     *   为什么用 Set 而不是布尔：两种占用可能重叠（比如播着语音条的同时来电话）。
+     *   布尔会在「语音播完恢复」时把仍在通话中的音乐也放出来。
+     *   记成「原因集合」，全部解除才恢复 —— 这是这类让位逻辑的正确写法。
+     *
+     *   另外要记住【占用前是否在播】：如果本来就没放音乐，
+     *   语音播完不该把音乐凭空启动。
+     * ======================================================================= */
+    const 占用 = new Set();
+    let 占用前在播 = false;
+    /* ★ 声明在 IIFE 顶层而不是 启动() 内：页尾探针 __全局音乐.补播中() 要访问它，
+         放在 启动() 里的话外层作用域取不到（TDZ / 未定义）。 */
+    let 补播中 = false;
+
+    /** 4 页让位时，操作目标是它自己的 #音乐播放器；否则是本脚本建的那个 */
+    function 取音频() {
+        return document.getElementById('音乐播放器') || document.getElementById(元素id);
+    }
+
+    const 全局音频 = {
+        /** 暂停背景音乐（可重入；同一原因重复调用无害） */
+        暂停(原因) {
+            const 键 = 原因 || '未命名';
+            if (占用.size === 0) {
+                const a = 取音频();
+                占用前在播 = !!a && !a.paused;
+            }
+            占用.add(键);
+            const a = 取音频();
+            if (a && !a.paused) { try { a.pause(); } catch (e) {} }
+        },
+
+        /** 解除某个占用；全部解除且占用前在播 → 恢复播放 */
+        恢复(原因) {
+            const 键 = 原因 || '未命名';
+            if (!占用.has(键)) return;
+            占用.delete(键);
+            if (占用.size > 0) return;              // 还有别的占用（比如仍在通话）
+            if (!占用前在播) return;                 // 本来就没在播 → 不凭空启动
+            const a = 取音频();
+            if (a && a.paused) {
+                const 试 = a.play();
+                if (试 && typeof 试.catch === 'function') 试.catch(() => {});
+            }
+        },
+
+        /** 强制清掉所有占用（异常路径兜底用） */
+        清除() { 占用.clear(); },
+
+        占用中() { return 占用.size > 0; },
+        占用表() { return Array.from(占用); },
+        是否在播() { const a = 取音频(); return !!a && !a.paused; },
+    };
+    /* ★ 无论让不让位都挂上：让位时它操作的是 4 页自己的播放器，
+       调用方（语音条 / 通话）不必关心自己在哪个页面。 */
+    window.全局音频 = 全局音频;
+
+    function 启动() {
+        /* ★★ 让位：4 页有完整播放器（#音乐播放器），这里绝不能再建第二个 audio。
+              注意 7 页那个是 #语音播放器（点语音消息用的），与本脚本无关，
+              各播各的，所以【只】认 #音乐播放器 这一个 id。 */
+        if (document.getElementById('音乐播放器')) return;
+        /* 防重：脚本万一被引了两次，也只建一个 audio */
+        if (document.getElementById(元素id)) return;
+
+        const 存 = 读状态();
+        // 没在播（或压根没播过）→ 安静退出，不建元素、不占资源
+        if (!存 || !存.播放中 || !存.名) return;
+
+        const 音频 = document.createElement('audio');
+        音频.id = 元素id;
+        音频.dataset.全局音乐 = '1';        // 便于排查 / 测试定位
+        音频.preload = 'metadata';
+        document.body.appendChild(音频);
+
+        const 目标 = Math.max(0, Number(存.时间) || 0);
+        let 已定位 = false;      // loadedmetadata 只处理一次（切目录会重复触发）
+        let 目录序 = 0;
+        let 上传链接 = '';
+
+        /* 跳回上次的秒数再播。★ 先 seek 后 play：
+           否则会从 0 开始，听感上像换了一首。 */
+        音频.addEventListener('loadedmetadata', () => {
+            if (已定位) return;
+            已定位 = true;
+            const 长 = isFinite(音频.duration) ? 音频.duration : 0;
+            try {
+                音频.currentTime = 长 > 0
+                    ? Math.min(目标, Math.max(0, 长 - 0.3))
+                    : 目标;
+            } catch (e) {}
+            续播();
+        });
+
+        /* 目录逐个试：与 4 页 载入当前目录() 同款（文件缺失 / 解码失败都能兜住） */
+        音频.addEventListener('error', () => {
+            if (目录序 < 目录候选.length) {
+                音频.src = encodeURI(目录候选[目录序++] + 存.名);
+            }
+        });
+
+        /* 播完了：不自动切歌（这里没有播放列表），停住并把状态改成「没在播」，
+           免得下一次进任意页面又从头播一遍。 */
+        音频.addEventListener('ended', () => {
+            写状态({ id: 存.id, 名: 存.名, 类型: 存.类型, 时间: 0, 播放中: false });
+        });
+
+        /* ---- 进度回写：下一页（或回到 4 页）要靠它续上 ---- */
+        function 存一次(播放中) {
+            写状态({
+                id: 存.id, 名: 存.名, 类型: 存.类型,
+                时间: 音频.currentTime || 0,
+                /* ★ 同 4 页那个坑：只认真正的布尔。pagehide / beforeunload
+                     的监听器会把 Event 对象当第一个参数传进来，
+                     `播放中 === undefined` 拦不住它 → `!!Event` = true。 */
+                播放中: typeof 播放中 !== 'boolean' ? !音频.paused : 播放中,
+            });
+        }
+        // 播着的时候每秒存一次，中途崩溃 / 强杀也不会丢太多
+        setInterval(() => { if (!音频.paused) 存一次(true); }, 1000);
+        // 离开页面再存一次：跳转、切后台、关闭三种情况都覆盖
+        const 存一次同步 = () => 存一次();
+        window.addEventListener('pagehide', 存一次同步);
+        window.addEventListener('beforeunload', 存一次同步);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') 存一次同步();
+        });
+
+        /* ------------------------------------------------------------
+         * 补播：浏览器会拦「没有用户手势」的自动播放，这是硬限制，绕不过去。
+         *   策略：
+         *     ① 直接播；
+         *     ② 被拒 → 【持续】监听用户交互，直到真的播起来才撤监听；
+         *     ③ 期间挂一个可见小条，告诉用户「点一下继续」。
+         *   ★★ 关键：不能用 once:true。那一次点击可能仍被拒（或音频还没
+         *      ready），失败后就再也没机会了 —— 表现正是「切过去没声音」。
+         *      必须【成功才停】，这是这段里最要紧的一句。
+         * ---------------------------------------------------------- */
+        const 事件名 = ['pointerdown', 'touchstart', 'click', 'keydown'];
+
+        function 撤补播() {
+            if (!补播中) return;
+            补播中 = false;
+            事件名.forEach(n => document.removeEventListener(n, 试补播, true));
+            document.removeEventListener('visibilitychange', 见可见);
+            收提示();
+        }
+
+        function 见可见() {
+            if (document.visibilityState === 'visible') 试补播();
+        }
+
+        function 试补播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();                     // 老浏览器无 Promise：当成功处理
+        }
+
+        /** 被拦 → 挂持续监听 + 显示提示条 */
+        function 展提示() {
+            if (!补播中) {
+                补播中 = true;
+                /* ★ 捕获阶段：冒泡阶段可能被页面自己的 stopPropagation 吃掉 */
+                事件名.forEach(n => document.addEventListener(n, 试补播, true));
+                document.addEventListener('visibilitychange', 见可见);
+            }
+            亮提示();
+        }
+
+        /* ---- 提示条：自建，不依赖各页自己的 toast 实现（各页不统一）---- */
+        let 提示元素 = null;
+        function 亮提示() {
+            if (提示元素) return;
+            const 条 = document.createElement('div');
+            条.id = '全局音乐提示';
+            条.textContent = '♪ 音乐已就绪，点一下继续播放';
+            // 样式全内联 + !important：各页 CSS 互不统一，不这样会被盖掉 / 变形
+            条.setAttribute('style', [
+                'position:fixed', 'left:50%', 'bottom:16px', 'transform:translateX(-50%)',
+                'z-index:99999', 'padding:8px 14px', 'border-radius:999px',
+                'background:rgba(28,28,32,0.86)', 'color:#fff', 'font-size:12px',
+                'letter-spacing:.3px', 'pointer-events:none',
+                'box-shadow:0 4px 16px rgba(0,0,0,.2)',
+                'transition:opacity .25s', 'opacity:0',
+                'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif',
+            ].join('!important;') + '!important');
+            document.body.appendChild(条);
+            提示元素 = 条;
+            setTimeout(() => { if (提示元素) 提示元素.style.opacity = '1'; }, 20);
+            setTimeout(收提示, 8000);           // 8 秒后自动收，别一直杵着
+        }
+        function 收提示() {
+            if (!提示元素) return;
+            const 条 = 提示元素;
+            提示元素 = null;
+            条.style.opacity = '0';
+            setTimeout(() => { if (条.parentNode) 条.parentNode.removeChild(条); }, 300);
+        }
+
+        function 续播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { 展提示(); return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();
+        }
+
+        // 播起来了就收掉提示（例如用户从别处触发了播放）
+        音频.addEventListener('play', 撤补播);
+
+        /* ---- 载入：上传曲目走 blob URL，其余按目录拼路径 ---- */
+        function 载入默认() {
+            目录序 = 0;
+            音频.src = encodeURI(目录候选[目录序++] + 存.名);
+        }
+
+        if (存.类型 === '上传' && 存.id) {
+            读一条(存.id).then(记录 => {
+                if (记录 && 记录.数据) {
+                    try {
+                        上传链接 = URL.createObjectURL(记录.数据);
+                        音频.src = 上传链接;
+                        return;
+                    } catch (e) {}
+                }
+                载入默认();          // 读不到（库被清了）→ 退回按名字找文件
+            });
+        } else {
+            载入默认();
+        }
+    }
+
+    /* DOM 就绪再跑：4 页的 #音乐播放器 也在 body 里，早了会误判成「没有」
+       → 两个 audio 同时出声。 */
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    // 测试 / 调试用：暴露一个只读探针，验证脚本确实起来了
+    window.__全局音乐 = {
+        键: 状态键,
+        元素id: 元素id,
+        让位条件: () => !!document.getElementById('音乐播放器'),
+        占用: 全局音频.占用表,
+        补播中: () => 补播中,
+    };
+})();
+    </script>
+
+
+    <script>
+/* ===== 主题背景：读全局设置（由 9_zhutishezhi.html 写入，全站共用）=====
+   ★ 背包页【也要有】主题背景 —— 与 1~10 / 15 页同款，改请一起改。
+     ① 自定义：直接用 dataURL
+     ② 内置：按索引取 2【图片】 下的主题（0 = 默认主题背景，1~5 = 背景1~背景5）
+     ③ 没设置 / 索引为 0：保持页面里写死的默认图，不动 */
+(function () {
+    var 图 = document.querySelector('.主题背景图片');
+    if (!图) return;
+    var 存 = null;
+    try { 存 = JSON.parse(localStorage.getItem('主题背景') || 'null'); } catch (e) {}
+    if (!存) return;
+
+    if (存.源 === '自定义' && 存.数据) { 图.src = 存.数据; return; }
+
+    /* ★ 页面里写死的默认图也可能不是 png：加载失败就按扩展名逐个试，
+         别让背景开天窗（与全站其它页同款处理）。 */
+    图.addEventListener('error', function () {
+        if (图.dataset.试过) return;
+        图.dataset.试过 = '1';
+        var 候选 = ['jpg', 'jpeg', 'webp'], 序 = 0;
+        图.addEventListener('error', function 再试() {
+            if (序 < 候选.length) 图.src = '2【图片】/默认主题背景.' + 候选[序++];
+        });
+        图.src = '2【图片】/默认主题背景.' + 候选[序++];
+    });
+
+    if (存.源 === '默认' && typeof 存.索引 === 'number' && 存.索引 > 0) {
+        var 名 = '背景' + 存.索引;
+        var 候选 = ['png', 'jpg', 'jpeg', 'webp'], 序 = 0;
+        图.addEventListener('error', function () {
+            if (序 < 候选.length) 图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+        });
+        图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+    }
+})();
+</script>
+    <script id="软键盘适配">
+/* =============================================================================
+ * 软键盘适配.js —— 让输入框在手机输入法弹出时始终可见
+ *
+ * 【要解决什么】
+ *   全站每个页面都是「100dvh 的固定容器 + 中间滚动区 + 底部固定区」的结构：
+ *       .手机主题背景容器 { height: 100dvh; overflow: hidden; display:flex; column }
+ *         ├── .顶部固定区      (flex-shrink: 0)
+ *         ├── .手机界面内容    (flex: 1; overflow-y: auto)  ← 唯一滚动区
+ *         └── .底部输入区      (flex-shrink: 0)
+ *   容器高度被 100dvh 硬锁死，所以输入法一弹出：
+ *     · iOS Safari：layout viewport 不变，visual viewport 被键盘吃掉一块，
+ *       容器高度纹丝不动 → 底部输入区整个被键盘盖住。
+ *     · Android Chrome（resize 模式）：innerHeight 会变小，dvh 跟着变，
+ *       容器自动变矮 → 但只在部分浏览器成立，换一家就打回原形。
+ *   同一套代码在两家表现不一样，正是这次要抹平的东西。
+ *
+ * 【核心思路：只信 visualViewport】
+ *   键盘高度 = 基准布局高 − visualViewport.height − visualViewport.offsetTop
+ *   然后把容器高度直接设成 visualViewport.height，并整体平移 offsetTop。
+ *   —— 不猜机型、不猜浏览器，只认「当前真正能看见的这块矩形」，
+ *      所以 iOS / Android / 各家输入法走的都是同一条代码路径。
+ *
+ *   ★ 基准布局高不是实时的 window.innerHeight —— 这是最容易写错的一处。
+ *     Android 键盘弹出时 innerHeight 本身就会变小，拿实时 innerHeight 去减
+ *     visualViewport.height 会得到 0，等于永远检测不到键盘（典型的「安卓没效果」）。
+ *     基准只在「确认键盘收起」时更新，弹出期间冻结。
+ *
+ * 【两件事一起做，缺一个都会漏】
+ *   ① 容器自适应：解决「底部常驻输入区被盖」（7 页的 .底部输入区）
+ *   ② 焦点滚入可视：解决「滚动区里的输入框被盖」（2 / 11 / 19~22 页的表单）
+ *
+ * 【四条硬约束（需求点，改动时别破）】
+ *   ① 不抖动：高度变化 ≤ 2px 不写样式；所有写入合并进一帧 rAF；
+ *              键盘判定阈值 80px，避开地址栏收起、工具栏隐藏这类假信号。
+ *   ② 不丢焦点：全程不 blur、不重建 DOM、不动 tabindex、不改 DOM 顺序。
+ *   ③ 不整页滚：绝不用 window.scrollTo 做补偿 —— 那会让 iOS 整个 layout
+ *      viewport 上移，顶部被切掉且松手后弹不回来。只改容器高度与
+ *      「最近的可滚动祖先」的 scrollTop。
+ *   ④ 不硬编码机型：没有 User-Agent 判断，没有 iOS / Android 分支。
+ *
+ * 【降级】
+ *   没有 visualViewport（老浏览器）→ 退回 window.resize + innerHeight 比对。
+ *   再不行 → 什么都不做，恢复成页面原本的样子（不会更糟）。
+ *
+ * 【对外 API（业务与测试用）】
+ *   window.软键盘.是否弹出()   → bool
+ *   window.软键盘.键盘高度()   → 像素
+ *   window.软键盘.校准()       → 立刻重算一次（比如弹窗关闭后）
+ *   window.软键盘.让位(px)     → 声明额外的底部占用（如自定义输入条），
+ *                                容器会再让出这么多高度
+ *   window.软键盘._喂(...)     → 测试用：直接喂一个可视区矩形
+ *
+ * ★★ 本文件是唯一源。改完跑：python3 同步软键盘.py
+ *     （与 全局音乐.js / 音频助手.js 同一套内联同步机制）
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    /* ------------------------------------------------------------------
+     * 常量
+     * ---------------------------------------------------------------- */
+    const 容器类名 = '手机主题背景容器';
+    const 弹出阈值 = 80;      // 键盘高度超过它才认定「键盘弹出了」
+    const 变化阈值 = 2;       // 高度变化不超过它就不写样式，省掉无意义的重排
+    const 底部余量 = 14;      // 焦点元素与可视区底部之间留的呼吸位
+    const 顶部余量 = 8;
+    const 类名键已弹 = '软键盘已弹出';
+    const 样式id = '软键盘适配样式';
+
+    const vv = (typeof window.visualViewport === 'object' && window.visualViewport)
+        ? window.visualViewport : null;
+
+    /* ------------------------------------------------------------------
+     * 状态
+     * ---------------------------------------------------------------- */
+    let 容器 = null;
+    let 基准高 = 0;           // 「键盘收起时」的布局高度，弹出期间冻结
+    let 已弹出 = false;
+    let 上次可视高 = 0;
+    let 上次偏移 = 0;
+    let 帧 = 0;               // rAF 句柄，用于合并
+    let 额外让位 = 0;         // window.软键盘.让位() 设进来的额外高度
+    let 焦点 = null;          // 最近一次聚焦的输入元素
+
+    /* ------------------------------------------------------------------
+     * 小工具
+     * ---------------------------------------------------------------- */
+    function 是输入框(el) {
+        if (!el || !el.tagName) return false;
+        const 标签 = el.tagName.toLowerCase();
+        return 标签 === 'input' || 标签 === 'textarea'
+            || (标签 === 'div' && el.isContentEditable === true);
+    }
+
+    /** 找容器：优先类名（全站统一），退化到 body 的唯一直接子元素 */
+    function 找容器() {
+        if (容器 && 容器.isConnected) return 容器;
+        容器 = document.querySelector('.' + 容器类名) || null;
+        return 容器;
+    }
+
+    function 可视顶() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+    function 可视底() {
+        if (vv) return (vv.offsetTop || 0) + vv.height;
+        return (window.scrollY || 0) + window.innerHeight;
+    }
+    function 当前可视高() { return vv ? vv.height : window.innerHeight; }
+    function 当前偏移() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+
+    /* ------------------------------------------------------------------
+     * 注入样式：只在键盘弹出时生效，收起即移除，不留残余
+     * ---------------------------------------------------------------- */
+    function 装样式() {
+        if (document.getElementById(样式id)) return;
+        const 样式 = document.createElement('style');
+        样式.id = 样式id;
+        /* ★ 用 class 而不是内联 style：收起时摘掉 class 就能还原，
+             不用逐个记住页面原本的 align-items / padding 是多少。 */
+        样式.textContent =
+            'html.' + 类名键已弹 + ' body{align-items:flex-start !important;}\n' +
+            'html.' + 类名键已弹 + ' .' + 容器类名 + '{padding-bottom:0 !important;}\n';
+        (document.head || document.documentElement).appendChild(样式);
+    }
+
+    /* ------------------------------------------------------------------
+     * 核心：把容器压到「真正看得见」的那块矩形里
+     * ---------------------------------------------------------------- */
+    function 应用() {
+        const 盒 = 找容器();
+        if (!盒) return;
+
+        const 可视高 = 当前可视高();
+        const 偏移 = 当前偏移();
+
+        if (!基准高) 基准高 = window.innerHeight || 可视高;
+
+        /* ★★ 键盘高度：基准 − 可视高 − 偏移。
+              基准在弹出期间冻结，所以 Android 那种「innerHeight 自己也会缩」
+              的情况同样算得出来。 */
+        let 键盘 = 基准高 - 可视高 - 偏移;
+        if (键盘 < 0) 键盘 = 0;
+
+        const 弹出 = 键盘 > 弹出阈值;
+
+        /* 状态没变、且可视高几乎没动 → 什么都不做（防抖动的第①道闸） */
+        if (弹出 === 已弹出
+            && Math.abs(可视高 - 上次可视高) <= 变化阈值
+            && Math.abs(偏移 - 上次偏移) <= 变化阈值) {
+            if (弹出) 校准焦点();
+            return;
+        }
+
+        上次可视高 = 可视高;
+        上次偏移 = 偏移;
+        已弹出 = 弹出;
+
+        const 根 = document.documentElement;
+        const 体 = document.body;
+
+        if (弹出) {
+            装样式();
+            if (!根.classList.contains(类名键已弹)) 根.classList.add(类名键已弹);
+
+            /* 容器高度 = 真正看得见的高度（再减去业务声明的额外让位） */
+            const 目标高 = Math.max(120, 可视高 - 额外让位);
+            盒.style.height = 目标高 + 'px';
+            盒.style.minHeight = 目标高 + 'px';
+            /* 跟着 visualViewport 的偏移走（iOS 页面被上推时靠它归位） */
+            盒.style.transform = (偏移 ? 'translateY(' + 偏移 + 'px)' : '');
+
+            /* ③ 不整页滚：只在系统确实把 layout viewport 推走时温和拉回原点。
+                 阈值 4px 是为了不跟正常的 1~2px 抖动打架。 */
+            if (!vv && (window.pageYOffset || 0) > 4 && 体) {
+                const 体溢出 = window.getComputedStyle(体).overflow;
+                if (体溢出 === 'hidden' || 体溢出 === 'clip') window.scrollTo(0, 0);
+            }
+        } else {
+            /* 收起：摘 class、清掉所有内联改动，回到页面原本的样子 */
+            if (根.classList.contains(类名键已弹)) 根.classList.remove(类名键已弹);
+            盒.style.height = '';
+            盒.style.minHeight = '';
+            盒.style.transform = '';
+            /* 收起时基准可以放心更新 —— 此刻量到的就是「无键盘」的真实高度 */
+            基准高 = window.innerHeight || 可视高;
+        }
+
+        /* 容器变矮之后滚动区也变矮，焦点元素可能又落到可视区外 → 再校准一次 */
+        校准焦点();
+    }
+
+    /** 合并到下一帧，避免 resize 连发时反复读写布局 */
+    function 排一帧() {
+        if (帧) return;
+        const 跑 = window.requestAnimationFrame
+            || function (f) { return setTimeout(f, 16); };
+        帧 = 跑(function () { 帧 = 0; 应用(); });
+    }
+
+    /* ------------------------------------------------------------------
+     * ② 焦点滚入可视
+     * ---------------------------------------------------------------- */
+    /** 向上找最近一个「真的能滚」的祖先 */
+    function 找滚动祖先(el) {
+        let n = el ? el.parentElement : null;
+        while (n && n !== document.body && n !== document.documentElement) {
+            const 样式 = window.getComputedStyle(n);
+            const 可滚 = /(auto|scroll|overlay)/.test(样式.overflowY || '');
+            if (可滚 && n.scrollHeight > n.clientHeight + 1) return n;
+            n = n.parentElement;
+        }
+        return null;
+    }
+
+    /**
+     * 把焦点元素挪进可视区。
+     * ★ 只动「最近滚动祖先」的 scrollTop —— 不动 window，避免整页位移。
+     * ★ 元素本来就在可视区里时什么都不做，不会没事乱滚。
+     */
+    function 校准焦点() {
+        const el = 焦点 || document.activeElement;
+        if (!是输入框(el)) return;
+        if (!找容器()) return;
+
+        const 矩形 = el.getBoundingClientRect();
+        if (!矩形.height && !矩形.top) return;      // 还没布局完，跳过
+
+        const 下界 = 可视底() - 底部余量;
+        const 上界 = 可视顶() + 顶部余量;
+
+        let 差 = 0;
+        if (矩形.bottom > 下界) 差 = 矩形.bottom - 下界;
+        else if (矩形.top < 上界) 差 = 矩形.top - 上界;
+
+        if (Math.abs(差) <= 1) return;
+
+        const 滚动父 = 找滚动祖先(el);
+        /* 不在任何滚动区里（比如底部常驻输入区）：容器已经跟着可视区收缩了，
+           理论上不该再超出。真超了也不碰 window —— 那才是抖动的根源。 */
+        if (滚动父) 滚动父.scrollTop += 差;
+    }
+
+    /* ------------------------------------------------------------------
+     * 事件
+     * ---------------------------------------------------------------- */
+    function 起监听() {
+        /* ① visualViewport：键盘弹出 / 收起 / 页面被上推 都走这里，逐帧跟随 */
+        if (vv) {
+            vv.addEventListener('resize', 排一帧);
+            vv.addEventListener('scroll', function () {
+                /* iOS 键盘弹出时若系统把 layout viewport 推走，offsetTop 会变，
+                   这里同步一下容器位置，避免顶部被切掉。 */
+                if (已弹出) 排一帧();
+            });
+        }
+
+        /* ② 降级：没有 visualViewport 的老浏览器，靠 window.resize */
+        window.addEventListener('resize', 排一帧);
+
+        /* ③ 方向变化：横竖屏切换后基准要重测 */
+        window.addEventListener('orientationchange', function () {
+            基准高 = 0;
+            setTimeout(排一帧, 120);
+        });
+
+        /* ④ 聚焦：记下元素并立刻校准一次。
+             键盘弹出是异步动画（iOS 约 250ms），所以这里先做一次「预防性」校准，
+             随后 visualViewport.resize 每帧触发时会继续跟着校准到最终位置。 */
+        document.addEventListener('focusin', function (e) {
+            if (!是输入框(e.target)) return;
+            焦点 = e.target;
+            /* 先测一次基准：此刻键盘还没弹，量到的正是无键盘高度 */
+            if (!已弹出) 基准高 = window.innerHeight || 当前可视高();
+            setTimeout(排一帧, 30);
+        }, true);
+
+        /* ⑤ 失焦：键盘收起由 resize 兜底，这里只清记录、不主动改布局
+              —— 切到下一个输入框时 focusin 会立刻接手，不会闪。 */
+        document.addEventListener('focusout', function (e) {
+            if (焦点 === e.target) 焦点 = null;
+        }, true);
+
+        /* ⑥ 切后台回来：尺寸可能已经变了 */
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) { 基准高 = 0; 排一帧(); }
+        });
+    }
+
+    /* ------------------------------------------------------------------
+     * 启动
+     * ---------------------------------------------------------------- */
+    function 启动() {
+        找容器();
+        基准高 = window.innerHeight || 当前可视高();
+        上次可视高 = 当前可视高();
+        上次偏移 = 当前偏移();
+        起监听();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    /* ------------------------------------------------------------------
+     * 对外 API
+     * ---------------------------------------------------------------- */
+    window.软键盘 = {
+        是否弹出: function () { return 已弹出; },
+        键盘高度: function () {
+            return Math.max(0, 基准高 - 当前可视高() - 当前偏移());
+        },
+        校准: 排一帧,
+        /** 业务声明额外的底部占用（例如自定义输入条），容器再让出这么多 */
+        让位: function (px) {
+            额外让位 = Math.max(0, Number(px) || 0);
+            排一帧();
+        },
+        /**
+         * 测试用：直接喂一个「可视区矩形」，跳过真实环境探测。
+         *   _喂(可视高, 偏移, 布局高)
+         * · 有 visualViewport：改它的 height / offsetTop
+         * · 没有（降级路径）：改 window.innerHeight
+         * 两种都是测试替身走的同一条代码路径，所以断言对真机同样成立。
+         */
+        _喂: function (可视高, 偏移, 布局高) {
+            if (typeof 布局高 === 'number' && 布局高 > 0) 基准高 = 布局高;
+            上次可视高 = -999;                 // 强制通过变化阈值，保证一定重算
+            if (vv) {
+                try {
+                    vv.height = 可视高;
+                    vv.offsetTop = 偏移 || 0;
+                } catch (e) {
+                    Object.defineProperty(vv, 'height', { value: 可视高, configurable: true });
+                    Object.defineProperty(vv, 'offsetTop', { value: 偏移 || 0, configurable: true });
+                }
+            } else {
+                try { window.innerHeight = 可视高; } catch (e) {
+                    Object.defineProperty(window, 'innerHeight',
+                        { value: 可视高, configurable: true, writable: true });
+                }
+            }
+            应用();
+            return true;
+        },
+        /** 测试用：当前容器被压到的高度（内联样式里的值，未设置则空串） */
+        _容器高: function () {
+            const 盒 = 找容器();
+            return 盒 ? (盒.style.height || '') : null;
+        },
+    };
+})();
+    </script>
+</body>
+</html>

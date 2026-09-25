@@ -1,0 +1,2637 @@
+<!DOCTYPE html>
+<!--
+    23_beifen.html —— 备份与恢复（数据导出 / 读取恢复）
+
+    入口：8_wode「我的」→ 设置区【备份与恢复】（带 ?from=8）
+
+    【做什么】
+      ① 导出备份：localStorage 全量 + IndexedDB 四库 → 单个 .zip，用户自选保存位置
+      ② 读取备份：选一个 .zip → 先校验并展示里面有什么 → 用户确认 → 完整恢复
+
+    【范围（漏一项恢复后就缺资料）】
+      localStorage：联系人索引 / 好友信息_* / 好友头像_* / 音色配置_* / 聊天记录_* /
+                    我的动态 / 主题背景 / 轮播图_* / 寄语_* / 阅读_* / 已授权_* …
+      IndexedDB   ：音乐库·音频（File）/ 图片库·图片（JSON）/
+                    聊天语音库·语音（Blob）/ 阅读_书库·书（JSON，含小说正文）
+
+    【文件夹自选：三条路依次降级】
+      ① APP 壳内 → window.小喵叽原生 桥 → 系统文件选择器（真·任意目录）
+      ② 支持的浏览器 → File System Access API（自选文件夹 / 另存为）
+      ③ 兜底 → a[download] 落到浏览器默认下载目录（iOS Safari / Firefox 走这条）
+      ★ 页面如实显示当前环境走哪条，绝不谎报「可自选文件夹」。
+
+    【安全】
+      ★ 覆盖恢复会【清空】当前全部数据，属于破坏性操作：
+        必须弹出确认层，写清后果，用户明确点「确认恢复」才执行。
+      ★ 恢复过程中任何一条失败（如 localStorage 超 5MB）都逐条列出，
+        绝不报「恢复成功」了事 —— 静默失败会让用户以为资料齐全，实际缺了一半。
+      ★ 恢复完成后必须提示刷新：各页面的 DOM 是进入时渲染的，
+        不刷新看到的还是旧数据。
+
+    【实现】核心逻辑全在 备份.js（唯一源），本页只做界面。
+      改完 备份.js 跑 `node 同步备份.js` 把内容重新内联进来。
+      引擎本身有 verify_beifen.js 守着（51 项断言，含 ZIP 往返、二进制还原、
+      覆盖/合并语义、失败上报）。
+
+    风格：与 1~22 页统一（同色板、毛玻璃、灰描边、深灰强调、SVG 图标）。
+-->
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>备份与恢复</title>
+    <style>
+        /* ===== 统一色板（与 1~22 页完全一致） ===== */
+        :root {
+            --ink: #333336;
+            --ink-2: #55555a;
+            --ink-3: #7a7a80;
+            --ink-4: #a4a4aa;
+            --accent: #4a4a50;
+            --accent-soft: #d5d5d9;
+            --accent-hi: #e6e6ea;
+            --accent-ink: #35353b;
+            --panel: 255, 255, 255;
+            --line: 158, 158, 162;
+            --shade: 48, 48, 54;
+            --glass: 0.5;
+            --blur: 14px;
+            --blur-sm: 8px;
+            /* ★★ hex 变量【不能】进 rgba() —— 会被整条丢弃。带透明度用下面这批数值变量。 */
+            --ink-rgb: 51, 51, 54;
+            --ink-2-rgb: 85, 85, 90;
+            --ink-3-rgb: 122, 122, 128;
+            --ink-4-rgb: 164, 164, 170;
+            --accent-rgb: 74, 74, 80;
+            --accent-soft-rgb: 213, 213, 217;
+            --accent-hi-rgb: 230, 230, 234;
+            --accent-ink-rgb: 53, 53, 59;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { overflow-x: hidden; touch-action: pan-y; }
+        body {
+            background-color: #dadae0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--ink-2); display: flex; justify-content: center; align-items: center;
+            min-height: 100dvh; overflow: hidden; overflow-x: hidden; touch-action: pan-y;
+        }
+        .手机主题背景容器 {
+            width: 100%; max-width: 430px; height: 100dvh; min-height: 100dvh;
+            position: relative; background-color: transparent;
+            overflow: hidden; overflow-x: hidden;
+            box-shadow: 0 0 20px rgba(var(--shade), 0.16);
+            display: flex; flex-direction: column; touch-action: pan-y;
+            padding-top: env(safe-area-inset-top, 0px);
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+            padding-left: env(safe-area-inset-left, 0px);
+            padding-right: env(safe-area-inset-right, 0px);
+        }
+        @media (max-width: 430px) { .手机主题背景容器 { box-shadow: none; } }
+        .主题背景图片 {
+            width: 100%; height: 100dvh; object-fit: cover; object-position: center;
+            display: block; position: absolute; top: 0; left: 0; z-index: 0; pointer-events: none;
+        }
+        .全局白色遮罩 {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(var(--panel), 0.45); z-index: 1; pointer-events: none;
+        }
+
+        /* ===== 顶栏 ===== */
+        .顶部固定区 {
+            position: relative; z-index: 10;
+            background: rgba(var(--panel), var(--glass));
+            -webkit-backdrop-filter: blur(var(--blur)) saturate(150%) brightness(1.06);
+            backdrop-filter: blur(var(--blur)) saturate(150%) brightness(1.06);
+            flex-shrink: 0; padding-bottom: clamp(6px, 2vw, 10px);
+        }
+        .顶部导航栏 {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: clamp(10px, 3vw, 14px) clamp(12px, 4vw, 16px) clamp(6px, 2vw, 8px);
+            font-size: clamp(12px, 3.5vw, 14px); color: var(--ink-2); position: relative;
+        }
+        .返回按钮 {
+            cursor: pointer; width: clamp(24px, 7vw, 28px); height: clamp(24px, 7vw, 28px);
+            display: flex; justify-content: center; align-items: center; border-radius: 50%;
+            flex-shrink: 0; -webkit-tap-highlight-color: transparent;
+            transition: background .18s;
+        }
+        .返回按钮:active { background: rgba(var(--line), 0.14); }
+        .返回按钮 svg {
+            width: clamp(17px, 4.8vw, 20px); height: clamp(17px, 4.8vw, 20px);
+            fill: none; stroke: var(--ink); stroke-width: 1.8;
+            stroke-linecap: round; stroke-linejoin: round;
+        }
+        /* ★ 中间标题绝对居中（脱离 flex 流），与 5 / 8 页同约定 */
+        .中间标题 {
+            position: absolute; left: 50%; transform: translateX(-50%);
+            font-size: clamp(15px, 4.3vw, 17px); font-weight: 600; color: var(--ink);
+            letter-spacing: .5px; white-space: nowrap;
+        }
+        .右侧占位 { width: clamp(24px, 7vw, 28px); flex-shrink: 0; }
+
+        /* ===== 滚动区 ===== */
+        .手机界面内容 {
+            flex: 1; overflow-y: auto; overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-y: contain;      /* 到顶/底不带动整页，滚动更干脆 */
+            position: relative; z-index: 5;
+            padding-bottom: clamp(20px, 6vw, 30px);
+            scrollbar-width: none; -ms-overflow-style: none;
+        }
+        .手机界面内容::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+        .分区标题 {
+            padding: clamp(12px, 3.4vw, 16px) clamp(14px, 4vw, 18px) clamp(6px, 1.8vw, 8px);
+            font-size: clamp(11.5px, 3.3vw, 12.5px); color: var(--ink-3);
+        }
+        .卡片 {
+            margin: 0 clamp(12px, 4vw, 16px) clamp(9px, 2.6vw, 12px);
+            background: rgba(var(--panel), var(--glass));
+            border-radius: 14px; overflow: hidden;
+        }
+        .提示文 {
+            padding: 0 clamp(14px, 4vw, 18px);
+            font-size: clamp(10.5px, 3vw, 12px); color: var(--ink-4); line-height: 1.6;
+        }
+
+        /* ===== 数据概况：两列小格 ===== */
+        .概况格 {
+            display: grid; grid-template-columns: repeat(2, 1fr);
+            gap: 1px; background: rgba(var(--line), 0.16);
+        }
+        .概况项 {
+            background: rgba(var(--panel), 0.34);
+            padding: clamp(9px, 2.6vw, 12px) clamp(11px, 3.2vw, 14px);
+        }
+        .概况数 {
+            font-size: clamp(15px, 4.3vw, 17px); font-weight: 600; color: var(--ink);
+            line-height: 1.25; font-variant-numeric: tabular-nums;
+        }
+        .概况名 {
+            font-size: clamp(10.5px, 3vw, 11.5px); color: var(--ink-3); margin-top: 2px;
+        }
+
+        /* ===== 状态行（沿用 21 页：状态点 + 文案 + 右侧钮） ===== */
+        .状态行 {
+            display: flex; align-items: center; gap: 7px;
+            padding: clamp(9px, 2.6vw, 12px) clamp(13px, 3.6vw, 16px);
+            font-size: clamp(11.5px, 3.3vw, 13px); color: var(--ink-3);
+            line-height: 1.5;
+        }
+        .状态点 {
+            width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+            background: rgba(var(--line), 0.6);
+        }
+        .状态行.成功 .状态点 { background: #4a9c6d; }
+        .状态行.失败 .状态点 { background: #c0392b; }
+        .状态行.忙 .状态点 { background: var(--accent); animation: 呼吸 1s ease-in-out infinite; }
+        .状态行.成功 { color: #3d7f59; }
+        .状态行.失败 { color: #c0392b; }
+        @keyframes 呼吸 { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+        .状态文 { flex: 1; min-width: 0; word-break: break-all; }
+
+        /* ===== 进度条：导出/恢复都是长操作，没反馈会让人以为卡死 ===== */
+        .进度槽 {
+            height: 3px; background: rgba(var(--line), 0.2);
+            overflow: hidden; display: none;
+        }
+        .进度槽.显示 { display: block; }
+        .进度条 {
+            height: 100%; width: 0%; background: rgba(var(--accent-rgb), 0.85);
+            /* 宽度变化加过渡，跳动感小很多 */
+            transition: width .22s ease-out;
+        }
+
+        /* ===== 主按钮 ===== */
+        .主钮 {
+            display: block; width: calc(100% - clamp(24px, 8vw, 32px));
+            margin: clamp(4px, 1.2vw, 6px) clamp(12px, 4vw, 16px) clamp(9px, 2.6vw, 12px);
+            padding: clamp(10px, 2.9vw, 13px);
+            border: none; border-radius: 999px;
+            background: rgba(var(--accent-rgb), 0.92); color: #fff;
+            font-size: clamp(13.5px, 3.9vw, 15px); font-weight: 600;
+            cursor: pointer; font-family: inherit;
+            -webkit-tap-highlight-color: transparent;
+            transition: background .18s, transform .1s, opacity .18s;
+        }
+        .主钮:active { background: rgba(var(--accent-ink-rgb), 0.92); transform: scale(.985); }
+        .主钮:disabled { background: rgba(var(--line), 0.38); cursor: default; transform: none; }
+        .次钮 {
+            display: block; width: calc(100% - clamp(24px, 8vw, 32px));
+            margin: 0 clamp(12px, 4vw, 16px) clamp(9px, 2.6vw, 12px);
+            padding: clamp(9px, 2.6vw, 12px);
+            border: 1px solid rgba(var(--line), 0.34); border-radius: 999px;
+            background: rgba(var(--panel), 0.5); color: var(--ink-2);
+            font-size: clamp(12.5px, 3.6vw, 14px);
+            cursor: pointer; font-family: inherit;
+            -webkit-tap-highlight-color: transparent;
+            transition: background .18s, transform .1s, opacity .18s;
+        }
+        .次钮:active { background: rgba(var(--line), 0.14); transform: scale(.985); }
+        .次钮:disabled { opacity: .45; cursor: default; transform: none; }
+        .危险钮 {
+            display: block; width: calc(100% - clamp(24px, 8vw, 32px));
+            margin: 0 clamp(12px, 4vw, 16px) clamp(9px, 2.6vw, 12px);
+            padding: clamp(9px, 2.6vw, 12px);
+            border: 1px solid rgba(192, 57, 43, 0.34); border-radius: 999px;
+            background: rgba(192, 57, 43, 0.07); color: #c0392b;
+            font-size: clamp(12.5px, 3.6vw, 14px);
+            cursor: pointer; font-family: inherit;
+            -webkit-tap-highlight-color: transparent;
+            transition: background .18s, transform .1s, opacity .18s;
+        }
+        .危险钮:active { background: rgba(192, 57, 43, 0.16); transform: scale(.985); }
+        .危险钮:disabled { opacity: .4; cursor: default; transform: none; }
+
+        /* ===== 备份包信息（选完文件后展示里面有什么） ===== */
+        .包信息 { display: none; }
+        .包信息.显示 { display: block; }
+        .包行 {
+            display: flex; align-items: baseline; gap: 8px;
+            padding: clamp(9px, 2.6vw, 11px) clamp(13px, 3.6vw, 16px);
+        }
+        .包行 + .包行 { border-top: 1px solid rgba(var(--line), 0.18); }
+        .包名 {
+            font-size: clamp(11.5px, 3.3vw, 12.5px); color: var(--ink-3);
+            flex-shrink: 0; width: clamp(52px, 15vw, 62px);
+        }
+        .包值 {
+            font-size: clamp(12.5px, 3.6vw, 14px); color: var(--ink);
+            flex: 1; min-width: 0; word-break: break-all; line-height: 1.5;
+        }
+
+        /* ===== 模式选择（覆盖 / 合并） ===== */
+        .模式组 { display: none; }
+        .模式组.显示 { display: block; }
+        .模式项 {
+            display: flex; align-items: flex-start; gap: clamp(9px, 2.6vw, 12px);
+            padding: clamp(10px, 2.9vw, 13px) clamp(13px, 3.6vw, 16px);
+            cursor: pointer; -webkit-tap-highlight-color: transparent;
+            transition: background .16s;
+        }
+        .模式项 + .模式项 { border-top: 1px solid rgba(var(--line), 0.18); }
+        .模式项:active { background: rgba(var(--line), 0.08); }
+        .模式圈 {
+            width: clamp(18px, 5.2vw, 21px); height: clamp(18px, 5.2vw, 21px);
+            border-radius: 50%; flex-shrink: 0; margin-top: 1px;
+            border: 1.6px solid rgba(var(--line), 0.5);
+            display: flex; align-items: center; justify-content: center;
+            transition: background .18s, border-color .18s;
+        }
+        .模式项.选中 .模式圈 {
+            background: rgba(var(--accent-rgb), 0.92);
+            border-color: rgba(var(--accent-rgb), 0.92);
+        }
+        .模式圈 svg {
+            width: 66%; height: 66%; fill: none; stroke: #fff; stroke-width: 2.6;
+            stroke-linecap: round; stroke-linejoin: round;
+            opacity: 0; transition: opacity .18s;
+        }
+        .模式项.选中 .模式圈 svg { opacity: 1; }
+        .模式文 { flex: 1; min-width: 0; }
+        .模式题 { font-size: clamp(13px, 3.7vw, 14.5px); color: var(--ink); }
+        .模式说 { font-size: clamp(10.5px, 3vw, 11.5px); color: var(--ink-3); margin-top: 3px; line-height: 1.55; }
+
+        /* ===== 结果清单：失败项逐条列出，绝不静默 ===== */
+        .结果区 { display: none; margin: 0 clamp(12px, 4vw, 16px) clamp(9px, 2.6vw, 12px); }
+        .结果区.显示 { display: block; }
+        .结果题 {
+            padding: clamp(9px, 2.6vw, 11px) clamp(13px, 3.6vw, 16px);
+            font-size: clamp(12px, 3.4vw, 13px); font-weight: 600;
+        }
+        .结果题.坏 { color: #c0392b; }
+        .结果题.好 { color: #3d7f59; }
+        .失败条 {
+            padding: clamp(8px, 2.3vw, 10px) clamp(13px, 3.6vw, 16px);
+            border-top: 1px solid rgba(var(--line), 0.18);
+            font-size: clamp(10.5px, 3vw, 11.5px); color: var(--ink-2); line-height: 1.55;
+            word-break: break-all;
+        }
+        .失败条 b { color: #c0392b; font-weight: 600; }
+        .失败清单 {
+            max-height: clamp(120px, 34vw, 180px); overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        /* ===== 确认层：覆盖恢复是破坏性操作，必须明确二次确认 ===== */
+        .确认层 {
+            position: absolute; inset: 0; z-index: 300;
+            background: rgba(var(--shade), 0.42);
+            display: flex; align-items: center; justify-content: center;
+            padding: clamp(20px, 6vw, 30px);
+            opacity: 0; pointer-events: none;
+            transition: opacity .22s;
+        }
+        .确认层.显示 { opacity: 1; pointer-events: auto; }
+        .确认框 {
+            width: 100%; max-width: 330px;
+            background: rgba(var(--panel), 0.94);
+            -webkit-backdrop-filter: blur(18px) saturate(160%);
+            backdrop-filter: blur(18px) saturate(160%);
+            border-radius: 16px; overflow: hidden;
+            box-shadow: 0 12px 40px rgba(var(--shade), 0.26);
+            transform: scale(.94) translateY(6px);
+            transition: transform .22s cubic-bezier(.22, .9, .3, 1);
+        }
+        .确认层.显示 .确认框 { transform: scale(1) translateY(0); }
+        .确认题 {
+            padding: clamp(15px, 4.4vw, 19px) clamp(16px, 4.6vw, 20px) clamp(7px, 2vw, 9px);
+            font-size: clamp(14.5px, 4.2vw, 16px); font-weight: 600; color: var(--ink);
+            text-align: center;
+        }
+        .确认文 {
+            padding: 0 clamp(16px, 4.6vw, 20px) clamp(13px, 3.8vw, 16px);
+            font-size: clamp(11.5px, 3.3vw, 13px); color: var(--ink-2);
+            line-height: 1.68; text-align: center;
+        }
+        .确认文.警告 { color: #b03a2e; }
+        .确认钮排 { display: flex; border-top: 1px solid rgba(var(--line), 0.2); }
+        .确认钮 {
+            flex: 1; padding: clamp(12px, 3.5vw, 15px);
+            border: none; background: transparent; cursor: pointer;
+            font-size: clamp(13.5px, 3.9vw, 15px); font-family: inherit;
+            color: var(--ink-2); -webkit-tap-highlight-color: transparent;
+            transition: background .16s;
+        }
+        .确认钮:active { background: rgba(var(--line), 0.12); }
+        .确认钮 + .确认钮 { border-left: 1px solid rgba(var(--line), 0.2); }
+        .确认钮.主要 { color: #c0392b; font-weight: 600; }
+        .确认钮:disabled { opacity: .45; cursor: default; }
+
+        /* ===== toast（与 21 页同款） ===== */
+        .toast {
+            position: absolute; left: 50%; bottom: clamp(90px, 25vw, 120px);
+            transform: translateX(-50%) translateY(8px);
+            background: rgba(var(--shade), 0.86); color: #fff;
+            padding: clamp(8px, 2.3vw, 10px) clamp(14px, 4vw, 18px);
+            border-radius: 999px; font-size: clamp(12px, 3.4vw, 13.5px);
+            opacity: 0; pointer-events: none; transition: opacity .24s, transform .24s;
+            z-index: 400; max-width: 86%; text-align: center; line-height: 1.5;
+        }
+        .toast.显示 { opacity: 1; transform: translateX(-50%) translateY(0); }
+        /* 长文案换行（toast 默认 nowrap 会把失败原因截断） */
+        .toast.多行 { white-space: normal; border-radius: 14px; }
+
+        /* 隐藏但保留可点击性（与 1/2/8/9 页同约定：display:none 会让移动端 click 失效） */
+        .视觉隐藏 {
+            position: absolute !important; width: 1px; height: 1px;
+            margin: -1px; padding: 0; border: 0; clip: rect(0 0 0 0);
+            overflow: hidden; white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+<div class="手机主题背景容器">
+    <img class="主题背景图片" src="2【图片】/默认主题背景.png" alt="手机主题背景占位图">
+    <div class="全局白色遮罩"></div>
+
+    <div class="顶部固定区">
+        <div class="顶部导航栏">
+            <div class="返回按钮" id="返回按钮" role="button" aria-label="返回">
+                <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            </div>
+            <div class="中间标题">备份与恢复</div>
+            <div class="右侧占位"></div>
+        </div>
+    </div>
+
+    <div class="手机界面内容">
+
+        <!-- ==================== 当前数据 ==================== -->
+        <div class="分区标题">本机现有数据</div>
+        <div class="卡片">
+            <div class="概况格" id="概况格">
+                <div class="概况项"><div class="概况数" id="数联系人">–</div><div class="概况名">联系人</div></div>
+                <div class="概况项"><div class="概况数" id="数聊天">–</div><div class="概况名">有聊天记录的联系人</div></div>
+                <div class="概况项"><div class="概况数" id="数动态">–</div><div class="概况名">我的动态</div></div>
+                <div class="概况项"><div class="概况数" id="数音乐">–</div><div class="概况名">上传的音乐</div></div>
+                <div class="概况项"><div class="概况数" id="数语音">–</div><div class="概况名">语音条</div></div>
+                <div class="概况项"><div class="概况数" id="数书">–</div><div class="概况名">书架 / 小说</div></div>
+                <div class="概况项"><div class="概况数" id="数图片">–</div><div class="概况名">聊天图片</div></div>
+                <div class="概况项"><div class="概况数" id="数键">–</div><div class="概况名">本地设置项</div></div>
+            </div>
+        </div>
+        <div class="提示文">备份会把上面这些连同主题设置、音色配置、阅读进度一起打包，一个文件全带走。</div>
+
+        <!-- ==================== 导出 ==================== -->
+        <div class="分区标题">导出备份</div>
+        <div class="卡片">
+            <div class="状态行" id="导出状态行">
+                <span class="状态点"></span>
+                <span class="状态文" id="导出状态文">点下面的按钮开始导出</span>
+            </div>
+            <div class="进度槽" id="导出进度槽"><div class="进度条" id="导出进度条"></div></div>
+        </div>
+        <button class="主钮" id="导出钮" type="button">导出备份文件</button>
+        <div class="提示文" id="导出方式文">正在检测保存方式…</div>
+
+        <!-- ==================== 读取恢复 ==================== -->
+        <div class="分区标题">读取备份</div>
+        <div class="卡片">
+            <div class="状态行" id="恢复状态行">
+                <span class="状态点"></span>
+                <span class="状态文" id="恢复状态文">还没选备份文件</span>
+            </div>
+            <div class="进度槽" id="恢复进度槽"><div class="进度条" id="恢复进度条"></div></div>
+
+            <!-- 选中文件后展示包内容，让用户先看清再决定 -->
+            <div class="包信息" id="包信息">
+                <div class="包行"><span class="包名">文件</span><span class="包值" id="包文件名">–</span></div>
+                <div class="包行"><span class="包名">大小</span><span class="包值" id="包大小">–</span></div>
+                <div class="包行"><span class="包名">导出时间</span><span class="包值" id="包时间">–</span></div>
+                <div class="包行"><span class="包名">包含</span><span class="包值" id="包内容">–</span></div>
+            </div>
+
+            <!-- 模式选择：默认「覆盖」，因为用户要的是「恢复所有资料记录」 -->
+            <div class="模式组" id="模式组">
+                <div class="模式项 选中" data-模式="覆盖">
+                    <span class="模式圈"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></span>
+                    <span class="模式文">
+                        <span class="模式题">覆盖恢复</span>
+                        <span class="模式说">先清空本机现有资料，再写入备份里的全部内容。恢复到备份那一刻的完整状态。</span>
+                    </span>
+                </div>
+                <div class="模式项" data-模式="合并">
+                    <span class="模式圈"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></span>
+                    <span class="模式文">
+                        <span class="模式题">合并恢复</span>
+                        <span class="模式说">只写入备份内容，备份里没有的本机新数据保留。同名项以备份为准。</span>
+                    </span>
+                </div>
+            </div>
+        </div>
+        <button class="次钮" id="选文件钮" type="button">选择备份文件</button>
+        <button class="危险钮" id="恢复钮" type="button" disabled>恢复这份备份</button>
+        <div class="提示文">覆盖恢复会清空本机现有资料，执行前会再让你确认一次。恢复完需要刷新页面才能看到。</div>
+
+        <!-- ==================== 结果 ==================== -->
+        <div class="结果区" id="结果区">
+            <div class="卡片" style="margin:0">
+                <div class="结果题" id="结果题">结果</div>
+                <div class="失败清单" id="失败清单"></div>
+            </div>
+        </div>
+
+        <div class="分区标题">说明</div>
+        <div class="提示文" style="padding-bottom: clamp(10px,3vw,16px)">
+            备份文件是标准 ZIP，里面的音乐、语音原样保存不转码。文件只存在你选的位置，不上传到任何服务器。<br>
+            换手机时：旧机导出 → 把文件传到新机 → 新机读取恢复。
+        </div>
+    </div>
+
+    <!-- 隐藏的 file input：走浏览器兜底选文件时用。
+         ★ 不能用 display:none —— 移动端会点不出来（1/2/8/9 页踩过这个坑）。 -->
+    <input type="file" id="隐藏文件输入" class="视觉隐藏" accept=".zip,application/zip" />
+
+    <!-- 确认层 -->
+    <div class="确认层" id="确认层">
+        <div class="确认框">
+            <div class="确认题" id="确认题">确认恢复？</div>
+            <div class="确认文" id="确认文">此操作不可撤销。</div>
+            <div class="确认钮排">
+                <button class="确认钮" id="确认取消" type="button">取消</button>
+                <button class="确认钮 主要" id="确认执行" type="button">确认恢复</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+</div>
+
+    <script id="备份引擎">
+/* =============================================================================
+ * 备份.js —— 全站数据导出 / 读取恢复（★ 唯一源，改完跑 `node 同步备份.js`）
+ *
+ * 【备份范围】（漏一个恢复后就会缺资料，改动前先对一遍）
+ *   ① localStorage 全量键 —— 联系人索引 / 好友信息_* / 好友头像_* / 音色配置_* /
+ *      聊天记录_* / 我的动态 / 主题背景 / 轮播图_* / 寄语_* / 阅读_* / 已授权_* …
+ *   ② IndexedDB 四个库：
+ *      · 音乐库/音频      —— `数据` 字段是 File（用户上传的曲目）
+ *      · 图片库/图片      —— 纯 JSON（base64 在 `数据` 字段里，不是 Blob）
+ *      · 聊天语音库/语音  —— `blob` 字段是 Blob（录音 + TTS 语音条）
+ *      · 阅读_书库/书     —— 纯 JSON（小说正文在 `章节[].正文`）
+ *
+ * 【为什么打成 ZIP 而不是 JSON】
+ *   音乐 / 语音是二进制。塞进 JSON 必须 base64，体积直接涨 33%，
+ *   几十兆的录音能撑爆字符串。所以走 ZIP 的 store 模式（只归档不压缩）：
+ *   二进制原样存，文本条目单独存，manifest 里用 {"__二进制__":"路径"} 指过去。
+ *   不压缩是刻意的 —— 音频图片本来就是压缩过的格式，再压白费 CPU，
+ *   而且 store 模式解析简单，出错面小。
+ *
+ * 【零依赖】手写 ZIP（CRC32 + local header + central directory + EOCD），
+ *   不引 JSZip —— 全站是离线单文件 H5，不能挂外链。
+ *
+ * 【文件夹自选】三条路，按可用性依次降级：
+ *   ① APP 壳内：window.小喵叽原生 桥（系统文件选择器，真·任意目录）
+ *   ② 支持的浏览器：File System Access API（showDirectoryPicker / showSaveFilePicker）
+ *   ③ 兜底：a[download] 落到浏览器默认下载目录（iOS Safari / Firefox 走这条）
+ *   读取同理：① 桥 ② showOpenFilePicker ③ input[type=file]
+ *
+ * ★ 任何一步失败都必须把原因抛给调用方显示出来，绝不静默成功。
+ *   （历史坑：localStorage 超 5MB 时 setItem 抛 QuotaExceededError，
+ *     吞掉异常会让用户以为恢复好了，实际资料缺了一半。）
+ * ========================================================================== */
+(function (全局) {
+    'use strict';
+
+    /* 备份文件格式版本：以后改结构就 +1，读取时按版本兼容 */
+    const 格式版本 = 1;
+
+    /* IndexedDB 已知库名。
+       浏览器支持 indexedDB.databases() 时会与之取并集（用户可能有别的库），
+       不支持的（Safari / Firefox）就只认这张表 —— 所以新增库必须登记在这里。 */
+    const 已知库名 = ['音乐库', '图片库', '聊天语音库', '阅读_书库'];
+
+    /* ZIP 单文件与总量的硬上限（32 位字段限制）。
+       超了要提前报清楚，不能产出一个解压就报错的坏包。 */
+    const 单文件上限 = 0xFFFFFFFF;      // 4GB - 1
+    const 条目数上限 = 0xFFFF;          // 65535
+
+    /* ======================================================================
+     * 0. 小工具
+     * ==================================================================== */
+
+    const 编码器 = new TextEncoder();
+    const 解码器 = new TextDecoder('utf-8');
+
+    function 文本转字节(文) {
+        return 编码器.encode(String(文 == null ? '' : 文));
+    }
+
+    /**
+     * 是不是 Blob / File。
+     * ★ 不用 instanceof：跨 realm（iframe、worker、测试里 Node 与 jsdom 两个全局）
+     *   会判错。漏判的后果是二进制没被抽出来 → 恢复后音乐、语音全丢。
+     */
+    function 是Blob(值) {
+        if (!值 || typeof 值 !== 'object') return false;
+        if (typeof Blob !== 'undefined' && 值 instanceof Blob) return true;
+        return typeof 值.arrayBuffer === 'function' && typeof 值.size === 'number'
+            && typeof 值.type === 'string' && typeof 值.slice === 'function';
+    }
+
+    /** 是不是 File（Blob 且带文件名）。同样避开跨 realm 的 instanceof。 */
+    function 是File(值) {
+        return 是Blob(值) && typeof 值.name === 'string' && 值.name !== '';
+    }
+
+    /** Blob / File / ArrayBuffer / TypedArray / 字符串 统一成 Uint8Array
+     *  ★ TypedArray 用 duck typing 判，不用 instanceof：跨 realm 时会失效。 */
+    async function 转字节(值) {
+        if (值 == null) throw new Error('数据为空，无法打包');
+        if (typeof 值 === 'string') return 文本转字节(值);
+        if (ArrayBuffer.isView(值)) {                    // Uint8Array 及其它 TypedArray / DataView
+            const 视 = (值 instanceof DataView) ? new Uint8Array(值.buffer, 值.byteOffset, 值.byteLength) : 值;
+            return new Uint8Array(视.buffer, 视.byteOffset, 视.byteLength);
+        }
+        if (值 instanceof ArrayBuffer || (值.constructor && 值.constructor.name === 'ArrayBuffer')) {
+            return new Uint8Array(值);
+        }
+        if (是Blob(值)) return new Uint8Array(await 值.arrayBuffer());
+        throw new Error('无法转成字节：' + Object.prototype.toString.call(值));
+    }
+
+    /* CRC32：ZIP 必需。用标准多项式 0xEDB88320 预生成 256 项查表，
+       比逐位算快一个数量级 —— 几十兆录音也要逐字节过一遍。 */
+    const CRC表 = (function () {
+        const 表 = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+            let c = i;
+            for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+            表[i] = c >>> 0;
+        }
+        return 表;
+    })();
+
+    function 算CRC(字节) {
+        let c = 0xFFFFFFFF;
+        for (let i = 0; i < 字节.length; i++) c = CRC表[(c ^ 字节[i]) & 0xFF] ^ (c >>> 8);
+        return (c ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    /* DOS 时间/日期：ZIP 头里的时间字段是这个古怪格式，
+       位运算写错了某些解压工具会显示 1980 年，不影响数据但很难看。 */
+    function dos时间(d) {
+        return ((d.getHours() & 0x1F) << 11) | ((d.getMinutes() & 0x3F) << 5) | ((Math.floor(d.getSeconds() / 2)) & 0x1F);
+    }
+    function dos日期(d) {
+        return (((d.getFullYear() - 1980) & 0x7F) << 9) | (((d.getMonth() + 1) & 0x0F) << 5) | (d.getDate() & 0x1F);
+    }
+
+    function 读U16(视图, 位) { return 视图.getUint16(位, true); }
+    function 读U32(视图, 位) { return 视图.getUint32(位, true); }
+    function 写U16(视图, 位, 值) { 视图.setUint16(位, 值 & 0xFFFF, true); }
+    function 写U32(视图, 位, 值) { 视图.setUint32(位, 值 >>> 0, true); }
+
+    function 字节转Base64(字节) {
+        /* 分块拼接：一次 String.fromCharCode(...大数组) 会爆调用栈 */
+        let 串 = '';
+        const 块 = 0x8000;
+        for (let i = 0; i < 字节.length; i += 块) {
+            串 += String.fromCharCode.apply(null, 字节.subarray(i, i + 块));
+        }
+        return btoa(串);
+    }
+    function base64转字节(串) {
+        const 二 = atob(String(串 || ''));
+        const 出 = new Uint8Array(二.length);
+        for (let i = 0; i < 二.length; i++) 出[i] = 二.charCodeAt(i);
+        return 出;
+    }
+
+    function 字节数文案(n) {
+        const v = Number(n) || 0;
+        if (v < 1024) return v + ' B';
+        if (v < 1048576) return (v / 1024).toFixed(1) + ' KB';
+        if (v < 1073741824) return (v / 1048576).toFixed(1) + ' MB';
+        return (v / 1073741824).toFixed(2) + ' GB';
+    }
+
+    /* ======================================================================
+     * 1. ZIP 打包（store 模式，不压缩）
+     * ====================================================================
+     * 条目：[{ 路径:'a/b.bin', 数据: Uint8Array|string|Blob }]
+     * 用 Blob 数组拼接而不是先算总长开一个大 buffer —— 数据可能上百兆，
+     * 一次性分配连续内存容易崩，Blob 是惰性拼接的。
+     * ==================================================================== */
+
+    async function 打包ZIP(条目表, 进度) {
+        if (!Array.isArray(条目表) || !条目表.length) throw new Error('没有可打包的内容');
+        if (条目表.length > 条目数上限) {
+            throw new Error('条目数 ' + 条目表.length + ' 超过 ZIP 上限 ' + 条目数上限 + '，请分开备份');
+        }
+
+        const 部分 = [];                 // 最终 Blob 的各段
+        const 中央项 = [];               // central directory 记录
+        let 偏移 = 0;                    // 当前 local header 的绝对偏移
+        let 已写字节 = 0;
+        const 现在 = new Date();
+        const 时 = dos时间(现在), 日 = dos日期(现在);
+        const 报进度 = typeof 进度 === 'function' ? 进度 : function () {};
+
+        for (let i = 0; i < 条目表.length; i++) {
+            const 项 = 条目表[i];
+            const 字节 = await 转字节(项.数据);
+            if (字节.length > 单文件上限) {
+                throw new Error('单个文件「' + 项.路径 + '」有 ' + 字节数文案(字节.length) +
+                    '，超过 ZIP 4GB 上限，无法打包');
+            }
+
+            const 名字节 = 文本转字节(项.路径);
+            const crc = 算CRC(字节);
+
+            /* local file header：30 字节固定 + 文件名 */
+            const 头 = new Uint8Array(30 + 名字节.length);
+            const 头视 = new DataView(头.buffer);
+            写U32(头视, 0, 0x04034b50);
+            写U16(头视, 4, 20);            // version needed
+            写U16(头视, 6, 0x0800);        // flags：bit11 = 文件名 UTF-8（中文路径必需）
+            写U16(头视, 8, 0);             // compression：0 = store
+            写U16(头视, 10, 时);
+            写U16(头视, 12, 日);
+            写U32(头视, 14, crc);
+            写U32(头视, 18, 字节.length);  // compressed size（store 下等于原长）
+            写U32(头视, 22, 字节.length);  // uncompressed size
+            写U16(头视, 26, 名字节.length);
+            写U16(头视, 28, 0);            // extra length
+            头.set(名字节, 30);
+
+            部分.push(头, 字节);
+            中央项.push({ 名字节, crc, 长度: 字节.length, 偏移 });
+
+            偏移 += 头.length + 字节.length;
+            已写字节 += 字节.length;
+            报进度(i + 1, 条目表.length, 已写字节);
+        }
+
+        /* central directory */
+        let 中央长度 = 0;
+        for (const c of 中央项) {
+            const 块 = new Uint8Array(46 + c.名字节.length);
+            const 视 = new DataView(块.buffer);
+            写U32(视, 0, 0x02014b50);
+            写U16(视, 4, 20);              // version made by
+            写U16(视, 6, 20);              // version needed
+            写U16(视, 8, 0x0800);          // flags：UTF-8
+            写U16(视, 10, 0);              // compression
+            写U16(视, 12, 时);
+            写U16(视, 14, 日);
+            写U32(视, 16, c.crc);
+            写U32(视, 20, c.长度);
+            写U32(视, 24, c.长度);
+            写U16(视, 28, c.名字节.length);
+            写U16(视, 30, 0);              // extra
+            写U16(视, 32, 0);              // comment
+            写U16(视, 34, 0);              // disk number start
+            写U16(视, 36, 0);              // internal attrs
+            写U32(视, 38, 0);              // external attrs
+            写U32(视, 42, c.偏移);         // ★ local header 偏移
+            块.set(c.名字节, 46);
+            部分.push(块);
+            中央长度 += 块.length;
+        }
+
+        /* end of central directory */
+        const 尾 = new Uint8Array(22);
+        const 尾视 = new DataView(尾.buffer);
+        写U32(尾视, 0, 0x06054b50);
+        写U16(尾视, 4, 0);
+        写U16(尾视, 6, 0);
+        写U16(尾视, 8, 中央项.length);
+        写U16(尾视, 10, 中央项.length);
+        写U32(尾视, 12, 中央长度);
+        写U32(尾视, 16, 偏移);             // central directory 起始偏移
+        写U16(尾视, 20, 0);                // comment length
+        部分.push(尾);
+
+        return new Blob(部分, { type: 'application/zip' });
+    }
+
+    /* ======================================================================
+     * 2. ZIP 解析
+     * ====================================================================
+     * 从尾部往前找 EOCD 签名（后面可能跟注释，长度未知），
+     * 再按 central directory 逐个定位。不扫 local header —— 那样遇到
+     * 文件名里恰好出现签名会错位。
+     * ==================================================================== */
+
+    async function 解析ZIP(blob) {
+        const 总长 = blob.size;
+        if (总长 < 22) throw new Error('文件太小，不是有效的备份包');
+
+        /* EOCD 最小 22 字节，注释最长 65535 → 最多回看 22+65535 */
+        const 回看 = Math.min(总长, 22 + 0xFFFF);
+        const 尾块 = new Uint8Array(await blob.slice(总长 - 回看, 总长).arrayBuffer());
+        const 尾视 = new DataView(尾块.buffer);
+        let 尾位 = -1;
+        for (let i = 尾块.length - 22; i >= 0; i--) {
+            if (读U32(尾视, i) === 0x06054b50) { 尾位 = i; break; }
+        }
+        if (尾位 < 0) throw new Error('找不到 ZIP 结尾标记，文件可能已损坏或不是备份包');
+
+        const 条目数 = 读U16(尾视, 尾位 + 10);
+        const 中央偏移 = 读U32(尾视, 尾位 + 16);
+
+        /* EOCD 在文件里的绝对位置：尾块是从 (总长 - 回看) 处截出来的 */
+        const 尾绝对位 = 总长 - 回看 + 尾位;
+        if (中央偏移 + 46 > 总长) throw new Error('ZIP 目录偏移越界，文件可能已损坏');
+        /* 中央目录从 中央偏移 一直到 EOCD 之前 */
+        const 中央块 = new Uint8Array(await blob.slice(中央偏移, 尾绝对位).arrayBuffer());
+        const 中央视 = new DataView(中央块.buffer);
+
+        const 出 = new Map();
+        let 位 = 0;
+        for (let n = 0; n < 条目数; n++) {
+            if (位 + 46 > 中央块.length) break;
+            if (读U32(中央视, 位) !== 0x02014b50) break;   // 签名不对就停，别硬解
+            const 压缩法 = 读U16(中央视, 位 + 10);
+            const 原长 = 读U32(中央视, 位 + 24);
+            const 名长 = 读U16(中央视, 位 + 28);
+            const 附长 = 读U16(中央视, 位 + 30);
+            const 注长 = 读U16(中央视, 位 + 32);
+            const 本地位 = 读U32(中央视, 位 + 42);
+            const 名 = 解码器.decode(中央块.subarray(位 + 46, 位 + 46 + 名长));
+            出.set(名, { 压缩法, 原长, 本地位 });
+            位 += 46 + 名长 + 附长 + 注长;
+        }
+
+        return {
+            条目数: 出.size,
+            有(路径) { return 出.has(路径); },
+            路径表() { return Array.from(出.keys()); },
+            /** 取一条的原始字节 */
+            async 取字节(路径) {
+                const 项 = 出.get(路径);
+                if (!项) return null;
+                if (项.压缩法 !== 0) {
+                    throw new Error('备份包里的「' + 路径 + '」是压缩存储的，本工具只支持不压缩的备份包');
+                }
+                /* local header 的名字长/附加长要现读 —— 不能拿 central 里的值，
+                   两者理论上可以不一致（附加字段常被改写）。 */
+                const 头块 = new Uint8Array(await blob.slice(项.本地位, 项.本地位 + 30).arrayBuffer());
+                const 头视 = new DataView(头块.buffer);
+                if (读U32(头视, 0) !== 0x04034b50) throw new Error('「' + 路径 + '」的本地头损坏');
+                const 名长 = 读U16(头视, 26);
+                const 附长 = 读U16(头视, 28);
+                const 起 = 项.本地位 + 30 + 名长 + 附长;
+                return new Uint8Array(await blob.slice(起, 起 + 项.原长).arrayBuffer());
+            },
+            async 取文本(路径) {
+                const b = await this.取字节(路径);
+                return b == null ? null : 解码器.decode(b);
+            },
+            async 取JSON(路径) {
+                const t = await this.取文本(路径);
+                return t == null ? null : JSON.parse(t);
+            },
+            async 取Blob(路径, 类型) {
+                const b = await this.取字节(路径);
+                return b == null ? null : new Blob([b], { type: 类型 || 'application/octet-stream' });
+            }
+        };
+    }
+
+    /* ======================================================================
+     * 3. 采集：localStorage + IndexedDB → ZIP 条目
+     * ==================================================================== */
+
+    /** localStorage 全量键。
+     *  ★ 不能用 Object.keys(localStorage) —— Storage 是代理对象，
+     *    某些 WebView 里枚举不出来，必须走 length + key(i)。（与 22 页 扫键() 同结论） */
+    function 扫全部键() {
+        const 出 = [];
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k !== null) 出.push(k);
+            }
+        } catch (e) { /* 隐私模式下 localStorage 可能直接抛 */ }
+        return 出;
+    }
+
+    function 读本地存储全量() {
+        const 出 = {};
+        for (const k of 扫全部键()) {
+            try { 出[k] = localStorage.getItem(k); } catch (e) { 出[k] = null; }
+        }
+        return 出;
+    }
+
+    /** 实际存在的 IndexedDB 库名：已知清单 ∪ 浏览器枚举结果 */
+    async function 列库名() {
+        const 集 = new Set(已知库名);
+        try {
+            if (全局.indexedDB && typeof 全局.indexedDB.databases === 'function') {
+                const 表 = await 全局.indexedDB.databases();
+                if (Array.isArray(表)) 表.forEach(d => { if (d && d.name) 集.add(d.name); });
+            }
+        } catch (e) { /* 不支持就只用已知清单 */ }
+        return Array.from(集);
+    }
+
+    function 开库(名) {
+        return new Promise((完成, 失败) => {
+            if (typeof indexedDB === 'undefined') return 失败(new Error('本环境无 IndexedDB'));
+            let 请;
+            try { 请 = indexedDB.open(名); } catch (e) { return 失败(e); }
+            /* ★ 不传版本号：传了会比现有库高，触发 onupgradeneeded 改写用户的库结构。
+                 备份是只读操作，绝不能动原库。 */
+            请.onsuccess = () => 完成(请.result);
+            请.onerror = () => 失败(请.error || new Error('打开库失败：' + 名));
+            请.onblocked = () => 失败(new Error('库被占用：' + 名));
+        });
+    }
+
+    function 表全取(db, 表名) {
+        return new Promise((完成, 失败) => {
+            let 事;
+            try { 事 = db.transaction(表名, 'readonly'); } catch (e) { return 失败(e); }
+            const 仓 = 事.objectStore(表名);
+            const 请键 = 仓.getAllKeys();
+            const 请值 = 仓.getAll();
+            事.oncomplete = () => 完成({ 键: 请键.result || [], 值: 请值.result || [] });
+            事.onerror = () => 失败(事.error || new Error('读表失败：' + 表名));
+        });
+    }
+
+    /**
+     * 深度遍历一条记录，把 Blob / File 抽出来单独存，原位换成引用。
+     * 路径用 encodeURIComponent 编码每段 —— 记录字段名是中文，
+     * 直接拼进 ZIP 路径虽然 UTF-8 flag 能扛，但编码后更保险，也避开 / 冲突。
+     *
+     * ★ MIME 类型与文件名【挂在叶子引用上】而不是挂在父记录上：
+     *   还原是递归的，走到叶子时已经脱离了父对象的作用域，
+     *   元信息挂在父级会导致还原时取不到 → Blob 的 type 变成空串 →
+     *   语音条建出来的 URL 浏览器不认，点了没声音。
+     */
+    function 抽二进制(值, 路径, 桶) {
+        if (是Blob(值)) {
+            const 类型 = 值.type || '';
+            const 名 = 是File(值) ? (值.name || '') : '';
+            桶.push({ 路径: 路径 + '.bin', 类型, 名 });
+            const 引用 = { __二进制__: 路径 + '.bin' };
+            if (类型) 引用.__类型__ = 类型;
+            if (名) 引用.__名__ = 名;
+            return 引用;
+        }
+        if (Array.isArray(值)) return 值.map((v, i) => 抽二进制(v, 路径 + '/' + i, 桶));
+        /* Date 用 toString 判而不是 instanceof —— 同样是跨 realm 会失效。
+           误判成普通对象的话，Object.keys(Date) 是空数组，日期会被静默存成 {}。 */
+        if (值 && typeof 值 === 'object' && Object.prototype.toString.call(值) !== '[object Date]') {
+            const 出 = {};
+            for (const k of Object.keys(值)) 出[k] = 抽二进制(值[k], 路径 + '/' + encodeURIComponent(k), 桶);
+            return 出;
+        }
+        return 值;
+    }
+
+    /** 把抽走的引用换回真 Blob（还原后与原对象在字节、MIME、文件名上都一致） */
+    async function 还二进制(值, 包) {
+        if (Array.isArray(值)) {
+            const 出 = [];
+            for (const v of 值) 出.push(await 还二进制(v, 包));
+            return 出;
+        }
+        if (值 && typeof 值 === 'object') {
+            if (typeof 值.__二进制__ === 'string') {
+                const 类型 = 值.__类型__ || '';
+                const 名 = 值.__名__ || '';
+                const b = await 包.取Blob(值.__二进制__, 类型);
+                if (!b) return null;                       // 包缺了这个条目，如实给 null
+                /* File 比 Blob 多个文件名。音乐库原本存的就是 File，
+                   还原成 File 更贴近原状（无 File 构造函数的老 WebView 退成 Blob）。 */
+                if (名 && typeof File === 'function') {
+                    try { return new File([b], 名, { type: 类型 || b.type }); } catch (e) {}
+                }
+                return b;
+            }
+            const 出 = {};
+            for (const k of Object.keys(值)) 出[k] = await 还二进制(值[k], 包);
+            return 出;
+        }
+        return 值;
+    }
+
+    /**
+     * 采集全部数据，返回 ZIP 的 Blob。
+     * @param {function(阶段:string, 已:number, 总:number)} 进度
+     */
+    async function 导出备份(进度) {
+        const 报 = typeof 进度 === 'function' ? 进度 : function () {};
+        const 条目 = [];
+        const 失败表 = [];            // 采集过程中取不到 / 读不了的，如实带出去
+        const 起始 = Date.now();
+
+        /* ---- ① localStorage ---- */
+        报('正在读取本地设置', 0, 1);
+        const 本地 = 读本地存储全量();
+        const 本地键数 = Object.keys(本地).length;
+        条目.push({
+            路径: 'manifest.json',
+            数据: JSON.stringify({
+                格式版本,
+                应用: '小喵叽',
+                导出时间: new Date().toISOString(),
+                导出时间戳: 起始,
+                来源页面: (全局.location && 全局.location.pathname) || '',
+                本地存储键数: 本地键数,
+                用户代理: navigator.userAgent || ''
+            }, null, 2)
+        });
+        条目.push({ 路径: 'localStorage.json', 数据: JSON.stringify(本地) });
+        报('正在读取本地设置', 1, 1);
+
+        /* ---- ② IndexedDB ---- */
+        const 库名表 = await 列库名();
+        const 库摘要 = {};
+        let 已库 = 0;
+
+        for (const 库名 of 库名表) {
+            let db;
+            try {
+                db = await 开库(库名);
+            } catch (e) {
+                /* 库不存在时 open 也会成功并建一个空库，所以这里失败多半是环境问题。
+                   记下来一并报给用户，不能装作没事。 */
+                库摘要[库名] = { 错误: String(e && e.message || e) };
+                continue;
+            }
+
+            const 表名集 = Array.from(db.objectStoreNames || []);
+            const 库出 = { 表: {} };
+            const 目录 = 库名.replace(/[\\/:*?"<>|]/g, '_');
+
+            for (const 表名 of 表名集) {
+                let 全;
+                try {
+                    全 = await 表全取(db, 表名);
+                } catch (e) {
+                    库出.表[表名] = { 错误: String(e && e.message || e) };
+                    continue;
+                }
+
+                const 记录 = [];
+                const 二进制元 = {};
+                const 表目录 = 目录 + '/' + 表名.replace(/[\\/:*?"<>|]/g, '_');
+
+                for (let i = 0; i < 全.值.length; i++) {
+                    const 桶 = [];
+                    const 前缀 = 表目录 + '/' + i;
+                    /* 抽二进制会把 Blob 换成 { __二进制__:路径, __类型__, __名__ }，
+                       MIME 与文件名跟着叶子走，恢复时才能还原出可播放的对象。 */
+                    const 净 = 抽二进制(全.值[i], 前缀, 桶);
+                    记录.push({ 键: 全.键[i], 值: 净 });
+
+                    /* 抽出来的二进制另存条目。
+                       ★ 按路径反查原 Blob，而不是重新编码 —— 音乐库那条是 File，
+                         走 arrayBuffer() 再包 Blob 会丢掉文件名。 */
+                    for (const b of 桶) {
+                        const 原 = 取原值(全.值[i], b.路径, 前缀);
+                        if (原 == null) {
+                            失败表.push({ 位置: 库名 + '/' + 表名 + '/' + 全.键[i], 原因: '二进制字段「' + b.路径 + '」取不到，该条恢复后可能无法播放' });
+                        }
+                        条目.push({ 路径: b.路径, 数据: 原 != null ? 原 : new Uint8Array(0) });
+                    }
+                }
+                库出.表[表名] = { 记录数: 记录.length, 记录 };
+            }
+
+            try { db.close(); } catch (e) {}
+            条目.push({ 路径: 'idb/' + 目录 + '.json', 数据: JSON.stringify(库出) });
+            库摘要[库名] = 库出;
+            报('正在读取数据库：' + 库名, ++已库, 库名表.length);
+        }
+
+        /* 摘要单独存一份，方便用户不解压也能看清备份里有什么 */
+        const 概览 = {};
+        for (const k of Object.keys(库摘要)) {
+            const 库 = 库摘要[k];
+            概览[k] = 库.错误 ? { 错误: 库.错误 } : Object.keys(库.表 || {}).reduce((o, t) => {
+                o[t] = 库.表[t].记录数 != null ? 库.表[t].记录数 : 库.表[t];
+                return o;
+            }, {});
+        }
+
+        /* manifest 补上摘要（重写第一条） */
+        条目[0] = {
+            路径: 'manifest.json',
+            数据: JSON.stringify({
+                格式版本,
+                应用: '小喵叽',
+                导出时间: new Date(起始).toISOString(),
+                导出时间戳: 起始,
+                来源页面: (全局.location && 全局.location.pathname) || '',
+                本地存储键数: 本地键数,
+                数据库概览: 概览,
+                用户代理: navigator.userAgent || ''
+            }, null, 2)
+        };
+
+        const zip = await 打包ZIP(条目, (已, 总, 字节) => 报('正在打包 ' + 已 + '/' + 总, 已, 总));
+        return {
+            blob: zip,
+            概览: { 本地存储键数: 本地键数, 数据库: 概览 },
+            条目数: 条目.length,
+            失败: 失败表,          // ★ 采集期就没读到的，界面必须提示，不能装作备份完整
+        };
+    }
+
+    /** 按抽取时记下的路径反查原始 Blob（避免再遍历一次整棵树） */
+    function 取原值(根, 目标路径, 前缀) {
+        const 相 = 目标路径.slice(0, 目标路径.length - 4);      // 去掉 .bin
+        const 段 = 相.slice(前缀.length).split('/').filter(s => s !== '');
+        let 当 = 根;
+        for (let i = 0; i < 段.length; i++) {
+            if (当 == null) return null;
+            let 键 = 段[i];
+            if (Array.isArray(当)) {
+                当 = 当[Number(键)];
+            } else {
+                const 解 = decodeURIComponent(键);
+                当 = (解 in 当) ? 当[解] : 当[键];
+            }
+        }
+        return 是Blob(当) ? 当 : null;
+    }
+
+    /* ======================================================================
+     * 4. 恢复
+     * ==================================================================== */
+
+    /** 校验备份包，返回概览（不含实际写入） */
+    async function 检查备份(blob) {
+        const 包 = await 解析ZIP(blob);
+        const 元 = await 包.取JSON('manifest.json');
+        if (!元 || typeof 元 !== 'object') throw new Error('备份包里找不到 manifest.json，不是本应用导出的备份');
+        if (元.应用 !== '小喵叽') throw new Error('这个备份不是「小喵叽」导出的（标记：' + (元.应用 || '无') + '）');
+        if (Number(元.格式版本) > 格式版本) {
+            throw new Error('备份格式版本 ' + 元.格式版本 + ' 比当前程序支持的 ' + 格式版本 + ' 新，请先升级应用');
+        }
+        if (!包.有('localStorage.json')) throw new Error('备份包缺少 localStorage.json，文件可能不完整');
+
+        let 库列表 = [];
+        try {
+            const 本地 = await 包.取JSON('localStorage.json');
+            库列表 = Object.keys(本地 || {});
+        } catch (e) { throw new Error('localStorage.json 解析失败：' + (e.message || e)); }
+
+        return {
+            元,
+            本地存储键数: 库列表.length,
+            数据库概览: 元.数据库概览 || {},
+            导出时间: 元.导出时间 || '未知',
+            包
+        };
+    }
+
+    function 开库可写(名, 表名表) {
+        return new Promise((完成, 失败) => {
+            let 请;
+            try { 请 = indexedDB.open(名); } catch (e) { return 失败(e); }
+            请.onupgradeneeded = () => {
+                const db = 请.result;
+                (表名表 || []).forEach(t => {
+                    if (!db.objectStoreNames.contains(t)) db.createObjectStore(t, { keyPath: 'id' });
+                });
+            };
+            请.onsuccess = () => 完成(请.result);
+            请.onerror = () => 失败(请.error || new Error('打开库失败：' + 名));
+        });
+    }
+
+    /**
+     * 应用备份。
+     * @param {Blob} blob 备份文件
+     * @param {object} 选项 { 模式:'覆盖'|'合并', 进度:function }
+     *   覆盖 = 先清空同名范围再写（真正「恢复到备份时的状态」）
+     *   合并 = 只写入，已有的键保留（备份里没有的本地新数据不丢）
+     * @returns {Promise<{失败: Array, 本地写入: number, 库写入: object}>}
+     */
+    async function 恢复备份(blob, 选项) {
+        const 配 = 选项 || {};
+        const 模式 = 配.模式 === '合并' ? '合并' : '覆盖';
+        const 报 = typeof 配.进度 === 'function' ? 配.进度 : function () {};
+        const 失败表 = [];
+
+        const 检 = await 检查备份(blob);
+        const 包 = 检.包;
+
+        /* ---- ① localStorage ---- */
+        报('正在恢复本地设置', 0, 1);
+        const 本地 = await 包.取JSON('localStorage.json') || {};
+        const 键表 = Object.keys(本地);
+
+        if (模式 === '覆盖') {
+            /* 只清「备份里也有的键」之外的现存键？不 —— 覆盖的语义是回到备份那一刻，
+               所以要清掉当前所有键，再把备份的写回去。
+               ★ 但绝不能连备份自己的暂存键一起清，这里没有暂存键，安全。 */
+            try {
+                const 现存 = 扫全部键();
+                现存.forEach(k => { try { localStorage.removeItem(k); } catch (e) {} });
+            } catch (e) { 失败表.push({ 位置: 'localStorage', 原因: '清空失败：' + (e.message || e) }); }
+        }
+
+        let 本地写入 = 0;
+        for (let i = 0; i < 键表.length; i++) {
+            const k = 键表[i];
+            try {
+                localStorage.setItem(k, 本地[k]);
+                本地写入++;
+            } catch (e) {
+                /* ★ QuotaExceededError 必须如实上报。静默吞掉的话用户会以为恢复全好了，
+                     实际头像 / 聊天记录缺了一大片 —— 这比报错严重得多。 */
+                失败表.push({ 位置: 'localStorage:' + k, 原因: String(e && e.name === 'QuotaExceededError' ? '本地存储空间已满（5MB 上限），该条未写入' : (e && e.message || e)) });
+            }
+            if (i % 20 === 0) 报('正在恢复本地设置 ' + (i + 1) + '/' + 键表.length, i + 1, 键表.length);
+        }
+        报('正在恢复本地设置', 1, 1);
+
+        /* ---- ② IndexedDB ---- */
+        const 库写入 = {};
+        const 库路径 = 包.路径表().filter(p => p.indexOf('idb/') === 0 && /\.json$/.test(p));
+        let 已库 = 0;
+
+        for (const 路 of 库路径) {
+            const 库名 = decodeURIComponent(路.slice(4, 路.length - 5));
+            let 库数据;
+            try {
+                库数据 = await 包.取JSON(路);
+            } catch (e) {
+                失败表.push({ 位置: '库:' + 库名, 原因: '解析失败：' + (e.message || e) });
+                continue;
+            }
+            if (!库数据 || !库数据.表) continue;
+
+            const 表名表 = Object.keys(库数据.表).filter(t => !库数据.表[t].错误);
+            报('正在恢复数据库：' + 库名, 已库, 库路径.length);
+
+            let db;
+            try {
+                db = await 开库可写(库名, 表名表);
+            } catch (e) {
+                失败表.push({ 位置: '库:' + 库名, 原因: '打开失败：' + (e.message || e) });
+                已库++;
+                continue;
+            }
+
+            const 本库 = {};
+            for (const 表名 of 表名表) {
+                const 表数据 = 库数据.表[表名];
+                const 记录 = 表数据.记录 || [];
+                if (!db.objectStoreNames.contains(表名)) {
+                    失败表.push({ 位置: 库名 + '/' + 表名, 原因: '表不存在，已跳过 ' + 记录.length + ' 条' });
+                    continue;
+                }
+
+                try {
+                    /* ★★ 必须先在事务【外】把二进制全部还原好，再开事务同步写入。
+                       IndexedDB 事务在微任务队列耗尽时自动提交，而还原 Blob 要 await
+                       blob.arrayBuffer()。若在事务内 await 再 put，第二次 put 就会抛
+                       TransactionInactiveError —— 结果是语音、音乐一条都存不进去，
+                       而且异常发生在 oncomplete 之后，看起来还像成功了。 */
+                    const 待写 = [];
+                    for (let i = 0; i < 记录.length; i++) {
+                        const 条 = 记录[i];
+                        if (!条 || 条.值 === undefined) continue;
+                        待写.push(await 还二进制(条.值, 包));
+                        if (i % 50 === 0) 报('正在解开 ' + 库名 + '/' + 表名 + ' ' + (i + 1) + '/' + 记录.length, i + 1, 记录.length);
+                    }
+
+                    const 写 = await new Promise((完成, 失败) => {
+                        let 事;
+                        try { 事 = db.transaction(表名, 'readwrite'); } catch (e) { return 失败(e); }
+                        const 仓 = 事.objectStore(表名);
+                        事.oncomplete = () => 完成(true);
+                        事.onerror = () => 失败(事.error || new Error('事务失败'));
+                        事.onabort = () => 失败(事.error || new Error('事务被中止'));
+                        if (模式 === '覆盖') 仓.clear();
+                        /* 纯同步循环：整个事务期间不 await，保证它不会提前自动提交 */
+                        for (const 值 of 待写) { try { 仓.put(值); } catch (e) { 失败(e); return; } }
+                    });
+                    本库[表名] = 写 ? 待写.length : 0;
+                    报('正在恢复 ' + 库名 + '/' + 表名, 1, 1);
+                } catch (e) {
+                    失败表.push({ 位置: 库名 + '/' + 表名, 原因: String(e && e.message || e) });
+                    本库[表名] = 0;
+                }
+            }
+
+            try { db.close(); } catch (e) {}
+            库写入[库名] = 本库;
+            已库++;
+        }
+
+        报('恢复完成', 1, 1);
+        return { 失败: 失败表, 本地写入, 库写入, 模式, 元: 检.元 };
+    }
+
+    /* ======================================================================
+     * 5. 落地：文件夹自选（桥 → FSA API → download 三级降级）
+     * ==================================================================== */
+
+    const 原生桥 = () => 全局.小喵叽原生 || null;
+
+    /**
+     * 归一化桥返回。
+     * ★ Android 的 @JavascriptInterface 方法只能把返回值序列化成【字符串/基本类型】，
+     *   无法直接返回 JS 对象。所以原生侧的 结束写()/选文件读() 返回 JSON 字符串，
+     *   这里 parse 回对象。已经是对象的（浏览器测试用的 mock 桥）直接透传，两种都兼容。
+     */
+    function 解桥返回(值) {
+        if (值 == null) return null;
+        if (typeof 值 === 'object') return 值;
+        if (typeof 值 !== 'string') return null;
+        const s = 值.trim();
+        if (!s) return null;
+        try { return JSON.parse(s); }
+        catch (e) { return { 失败: true, 原因: '桥返回内容无法解析：' + s }; }
+    }
+
+    function 支持目录选择() { return typeof 全局.showDirectoryPicker === 'function'; }
+    function 支持保存选择() { return typeof 全局.showSaveFilePicker === 'function'; }
+    function 支持打开选择() { return typeof 全局.showOpenFilePicker === 'function'; }
+
+    /** 默认备份文件名：小喵叽备份_2026-09-19_2330.zip */
+    function 默认文件名() {
+        const d = new Date();
+        const 补 = n => String(n).padStart(2, '0');
+        return '小喵叽备份_' + d.getFullYear() + '-' + 补(d.getMonth() + 1) + '-' + 补(d.getDate()) +
+            '_' + 补(d.getHours()) + 补(d.getMinutes()) + '.zip';
+    }
+
+    /* ★ 探测桥是否具备「分块写文件」这一组方法。
+       必须探测【实际会调用的】开始写 / 写块 / 结束写，不能探测一个用不上的标志位 ——
+       探测的字段和调用的字段对不上，桥就永远不会被触发，静默掉进 download 兜底。 */
+    function 桥可写文件(桥) {
+        return !!桥 && typeof 桥.开始写 === 'function'
+            && typeof 桥.写块 === 'function' && typeof 桥.结束写 === 'function';
+    }
+    function 桥可读文件(桥) {
+        return !!桥 && typeof 桥.选文件读 === 'function';
+    }
+
+    /**
+     * 保存备份。返回 { 方式, 位置 }；用户取消返回 null。
+     * 方式：'原生' | '目录' | '另存为' | '下载'
+     */
+    async function 保存备份(blob, 文件名) {
+        const 名 = 文件名 || 默认文件名();
+        const 桥 = 原生桥();
+
+        /* ① APP 壳：系统文件选择器，能选到任意目录（含外置存储 / 网盘挂载） */
+        if (桥可写文件(桥)) {
+            const 字节 = new Uint8Array(await blob.arrayBuffer());
+            const 块大小 = 512 * 1024;      // 分块传：JS 桥单次传大字符串会被截断
+            let 会话 = 桥.开始写(名, 字节.length);
+            /* ★ 安卓侧 开始写 成功返回会话 id 字符串；用户取消返回 '取消'；
+                 失败（如没有输出流）返回 JSON 字符串 {"失败":true,"原因":...}。
+                 若不把失败 JSON 拆出来，它会被当成会话 id 继续写，产出一个
+                 不完整甚至空的备份还谎报成功 —— 必须在这里就拦住。 */
+            if (typeof 会话 === 'string' && 会话.trim().charAt(0) === '{') 会话 = 解桥返回(会话);
+            if (会话 === false || 会话 == null || 会话 === '取消') return null;
+            if (typeof 会话 === 'object') {
+                throw new Error((会话 && 会话.原因) || '原生写入失败：无法创建备份文件');
+            }
+            for (let i = 0; i < 字节.length; i += 块大小) {
+                桥.写块(会话, 字节转Base64(字节.subarray(i, i + 块大小)));
+            }
+            const 果 = 解桥返回(桥.结束写(会话));
+            if (!果 || 果.失败) throw new Error((果 && 果.原因) || '原生写入失败');
+            return { 方式: '原生', 位置: 果.路径 || 名 };
+        }
+
+        /* ② File System Access API：真·自选文件夹 */
+        if (支持目录选择()) {
+            try {
+                const 目录柄 = await 全局.showDirectoryPicker({ mode: 'readwrite', startIn: 'documents' });
+                const 文件柄 = await 目录柄.getFileHandle(名, { create: true });
+                const 写 = await 文件柄.createWritable();
+                await 写.write(blob);
+                await 写.close();
+                return { 方式: '目录', 位置: 目录柄.name + '/' + 名 };
+            } catch (e) {
+                if (e && (e.name === 'AbortError' || e.name === 'NotAllowedError')) return null;  // 用户取消
+                /* 选目录失败（比如权限被拒）不直接放弃，继续往下降级 */
+            }
+        }
+
+        if (支持保存选择()) {
+            try {
+                const 文件柄 = await 全局.showSaveFilePicker({
+                    suggestedName: 名,
+                    types: [{ description: '小喵叽备份', accept: { 'application/zip': ['.zip'] } }]
+                });
+                const 写 = await 文件柄.createWritable();
+                await 写.write(blob);
+                await 写.close();
+                return { 方式: '另存为', 位置: 文件柄.name };
+            } catch (e) {
+                if (e && e.name === 'AbortError') return null;
+            }
+        }
+
+        /* ③ 兜底：a[download]。iOS Safari / Firefox 只能走这条，落到默认下载目录 */
+        const 链 = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = 链;
+        a.download = 名;
+        a.rel = 'noopener';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        /* ★ 延迟 revoke：立刻撤会让部分浏览器的下载直接失败 */
+        setTimeout(() => { try { URL.revokeObjectURL(链); } catch (e) {} }, 30000);
+        setTimeout(() => { try { a.remove(); } catch (e) {} }, 1000);
+        return { 方式: '下载', 位置: '浏览器默认下载目录/' + 名 };
+    }
+
+    /**
+     * 选一个备份文件读进来。返回 { 名, blob }；取消返回 null。
+     */
+    async function 选取备份文件() {
+        const 桥 = 原生桥();
+
+        if (桥可读文件(桥)) {
+            const 元 = 解桥返回(桥.选文件读());
+            if (!元 || 元.取消) return null;
+            if (元.失败) throw new Error(元.原因 || '原生读取失败');
+            const 总 = Number(元.长度) || 0;
+            const 块大小 = 512 * 1024;
+            const 段 = [];
+            let 已读 = 0;
+            for (let 位 = 0; 位 < 总; 位 += 块大小) {
+                const 块 = 桥.读块(元.会话, 位, Math.min(块大小, 总 - 位));
+                const 字节段 = base64转字节(块);
+                已读 += 字节段.length;
+                段.push(字节段);
+            }
+            /* ★ 校验实读字节数 == 声明长度。读块失败会返回空串，
+                 不校验就会静默拼出一个【缺尾】的损坏 zip，到解析时才报
+                 「找不到结尾标记」，让人误以为文件坏了、其实是没读全。 */
+            if (已读 !== 总) {
+                throw new Error('读取不完整：应有 ' + 总 + ' 字节，实读 ' + 已读 + ' 字节');
+            }
+            return { 名: 元.名 || '备份.zip', blob: new Blob(段, { type: 'application/zip' }) };
+        }
+
+        if (支持打开选择()) {
+            try {
+                const 柄表 = await 全局.showOpenFilePicker({
+                    multiple: false,
+                    types: [{ description: '小喵叽备份', accept: { 'application/zip': ['.zip'] } }]
+                });
+                if (!柄表 || !柄表.length) return null;
+                const 文件 = await 柄表[0].getFile();
+                return { 名: 文件.name, blob: 文件 };
+            } catch (e) {
+                if (e && e.name === 'AbortError') return null;
+            }
+        }
+
+        /* 兜底 input[type=file] */
+        return await new Promise((完成) => {
+            const 入 = document.createElement('input');
+            入.type = 'file';
+            入.accept = '.zip,application/zip';
+            入.style.display = 'none';
+            document.body.appendChild(入);
+            let 定 = false;
+            const 收 = (v) => { if (!定) { 定 = true; try { 入.remove(); } catch (e) {} 完成(v); } };
+            入.addEventListener('change', () => {
+                const f = 入.files && 入.files[0];
+                收(f ? { 名: f.name, blob: f } : null);
+            });
+            /* 用户点了取消不会触发 change，靠 window focus 兜一下 */
+            全局.addEventListener('focus', () => setTimeout(() => { if (!入.files || !入.files.length) 收(null); }, 800));
+            入.click();
+        });
+    }
+
+    /* ======================================================================
+     * 6. 对外
+     * ==================================================================== */
+
+    const 备份工具 = {
+        格式版本,
+        已知库名,
+        默认文件名,
+        字节数文案,
+        导出备份,
+        恢复备份,
+        检查备份,
+        保存备份,
+        选取备份文件,
+        扫全部键,
+        列库名,
+        支持目录选择,
+        支持保存选择,
+        支持打开选择,
+        /* ★ 桥能力按「写入 / 读取」分开报，别只报一个笼统的「有桥」——
+             壳只实现了写、没实现读时，读取按钮要提前禁用，而不是点了才报错。 */
+        桥可写文件: () => 桥可写文件(原生桥()),
+        桥可读文件: () => 桥可读文件(原生桥()),
+        有原生桥: () => !!原生桥(),
+        /** 一句话说明当前环境会把备份落到哪，给用户看（绝不谎报「可自选文件夹」） */
+        落地方式说明() {
+            if (桥可写文件(原生桥())) return 'APP 内：调起系统文件选择器，可存到任意文件夹';
+            if (支持目录选择()) return '浏览器：可自选保存文件夹';
+            if (支持保存选择()) return '浏览器：调起「另存为」，可选保存位置';
+            return '浏览器：落到默认下载目录（当前浏览器不支持自选文件夹）';
+        },
+        读取方式说明() {
+            if (桥可读文件(原生桥())) return 'APP 内：调起系统文件选择器';
+            if (支持打开选择()) return '浏览器：调起文件选择器';
+            return '浏览器：调起文件选择器（取消时可能不回调，需再点一次）';
+        },
+        /* 底层件也暴露出去，方便 verify 脚本直接验 CRC / ZIP 往返 */
+        _内部: { 打包ZIP, 解析ZIP, 算CRC, 抽二进制, 还二进制, 是Blob, 是File, 文本转字节, 字节转Base64, base64转字节 }
+    };
+
+    全局.备份工具 = 备份工具;
+
+    /* CommonJS 导出：让 jsdom 验证脚本能 require 进来单测 */
+    if (typeof module !== 'undefined' && module.exports) module.exports = 备份工具;
+
+})(typeof window !== 'undefined' ? window : globalThis);
+    </script>
+
+    <script>
+/* =============================================================================
+ * 23 页脚本 —— 界面层
+ *
+ *   核心逻辑全在 window.备份工具（备份.js），本页只负责：
+ *   ① 统计并展示本机现有数据
+ *   ② 导出：调 导出备份() → 保存备份()，进度与失败如实呈现
+ *   ③ 恢复：选文件 → 检查备份() 展示内容 → 确认层 → 恢复备份() → 结果与失败清单
+ *
+ *   ★ 三条铁律（改动时别破坏）：
+ *     1. 覆盖恢复前必须弹确认层，且文案要说清「会清空本机现有资料」。
+ *     2. 引擎返回的 失败 数组必须逐条显示，一条都不能吞 ——
+ *        静默失败 = 用户以为资料齐全、实际缺了一半，比报错严重得多。
+ *     3. 恢复成功后必须提示刷新。各页 DOM 是进入时渲染的，不刷新看到的还是旧数据。
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    const $ = id => document.getElementById(id);
+    const 工具 = window.备份工具;
+
+    /* 引擎没内联进来就别装死：明确告诉用户，而不是点按钮没反应 */
+    if (!工具) {
+        document.querySelector('.手机界面内容').innerHTML =
+            '<div class="分区标题">备份模块未加载</div>' +
+            '<div class="提示文">页面缺少备份引擎（备份.js 未内联）。' +
+            '请在项目目录执行 <b>node 同步备份.js</b> 后重新打开本页。</div>';
+        return;
+    }
+
+    /* ---------------------------------------------------------------
+     * toast
+     * ------------------------------------------------------------- */
+    const toast元 = $('toast');
+    let toast计时 = null;
+    function 提示(文, 长) {
+        if (!toast元) return;
+        toast元.textContent = 文;
+        toast元.classList.toggle('多行', !!长);
+        toast元.classList.add('显示');
+        clearTimeout(toast计时);
+        toast计时 = setTimeout(() => toast元.classList.remove('显示'), 长 ? 4200 : 2000);
+    }
+
+    /* ---------------------------------------------------------------
+     * 状态行 / 进度条
+     * ------------------------------------------------------------- */
+    function 设状态(行id, 文id, 态, 文) {
+        const 行 = $(行id);
+        if (行) {
+            行.classList.remove('成功', '失败', '忙');
+            if (态) 行.classList.add(态);
+        }
+        const 文元 = $(文id);
+        if (文元) 文元.textContent = 文;
+    }
+    function 设进度(槽id, 条id, 已, 总) {
+        const 槽 = $(槽id), 条 = $(条id);
+        if (!槽 || !条) return;
+        if (已 == null) { 槽.classList.remove('显示'); 条.style.width = '0%'; return; }
+        槽.classList.add('显示');
+        const 比 = 总 > 0 ? Math.max(0, Math.min(1, 已 / 总)) : 0;
+        条.style.width = (比 * 100).toFixed(1) + '%';
+    }
+
+    /* ---------------------------------------------------------------
+     * 结果清单：失败项逐条列出
+     * ------------------------------------------------------------- */
+    function 转义(串) {
+        return String(串 == null ? '' : 串)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+    function 显示结果(标题, 好, 失败表) {
+        const 区 = $('结果区'), 题 = $('结果题'), 清单 = $('失败清单');
+        if (!区 || !题 || !清单) return;
+        题.textContent = 标题;
+        题.className = '结果题 ' + (好 ? '好' : '坏');
+        清单.innerHTML = (失败表 || []).map(f =>
+            '<div class="失败条"><b>' + 转义(f.位置 || '未知位置') + '</b> — ' + 转义(f.原因 || '未知原因') + '</div>'
+        ).join('');
+        区.classList.add('显示');
+    }
+    function 隐藏结果() { const 区 = $('结果区'); if (区) 区.classList.remove('显示'); }
+
+    /* ---------------------------------------------------------------
+     * 1. 统计本机现有数据
+     * ------------------------------------------------------------- */
+    function 数表(库名, 表名) {
+        return new Promise(完成 => {
+            if (typeof indexedDB === 'undefined') return 完成(null);
+            let 请;
+            /* ★ 不传版本号：传了会比现有库高，触发 upgradeneeded 凭空建出库表 ——
+                 只是想看一眼有多少条数据，不能因此改写用户的库结构。 */
+            try { 请 = indexedDB.open(库名); } catch (e) { return 完成(null); }
+            请.onsuccess = () => {
+                const db = 请.result;
+                try {
+                    if (!db.objectStoreNames.contains(表名)) { db.close(); return 完成(0); }
+                    const 事 = db.transaction(表名, 'readonly');
+                    const 数请 = 事.objectStore(表名).count();
+                    事.oncomplete = () => { const n = 数请.result; db.close(); 完成(typeof n === 'number' ? n : 0); };
+                    事.onerror = () => { try { db.close(); } catch (e) {} 完成(null); };
+                } catch (e) { try { db.close(); } catch (e2) {} 完成(null); }
+            };
+            请.onerror = () => 完成(null);
+        });
+    }
+
+    async function 刷新概况() {
+        const 设 = (id, v) => { const e = $(id); if (e) e.textContent = (v == null ? '读取失败' : String(v)); };
+
+        /* localStorage：联系人 / 聊天记录条数 / 动态 / 键总数 */
+        let 联系人 = 0, 聊天 = 0, 动态 = 0;
+        const 键表 = 工具.扫全部键();
+        try {
+            const 索 = JSON.parse(localStorage.getItem('联系人索引') || '[]');
+            if (Array.isArray(索)) 联系人 = 索.length;
+        } catch (e) {}
+        聊天 = 键表.filter(k => k.indexOf('聊天记录_') === 0).length;
+        try {
+            const 动 = JSON.parse(localStorage.getItem('我的动态') || '[]');
+            if (Array.isArray(动)) 动态 = 动.length;
+        } catch (e) {}
+        设('数联系人', 联系人);
+        设('数聊天', 聊天);
+        设('数动态', 动态);
+        设('数键', 键表.length);
+
+        /* IndexedDB 四库并行数（互不依赖，没必要串行等） */
+        const [音, 语, 书, 图] = await Promise.all([
+            数表('音乐库', '音频'),
+            数表('聊天语音库', '语音'),
+            数表('阅读_书库', '书'),
+            数表('图片库', '图片'),
+        ]);
+        设('数音乐', 音);
+        设('数语音', 语);
+        设('数书', 书);
+        设('数图片', 图);
+    }
+
+    /* ---------------------------------------------------------------
+     * 2. 导出
+     * ------------------------------------------------------------- */
+    let 导出中 = false;
+
+    async function 做导出() {
+        if (导出中) return;
+        导出中 = true;
+        const 钮 = $('导出钮');
+        if (钮) { 钮.disabled = true; 钮.textContent = '正在导出…'; }
+        隐藏结果();
+        设进度('导出进度槽', '导出进度条', 0, 1);
+        设状态('导出状态行', '导出状态文', '忙', '正在采集数据…');
+
+        try {
+            const 果 = await 工具.导出备份((阶段, 已, 总) => {
+                设状态('导出状态行', '导出状态文', '忙', 阶段);
+                设进度('导出进度槽', '导出进度条', 已, 总);
+            });
+
+            设状态('导出状态行', '导出状态文', '忙', '正在写入文件…');
+            const 落 = await 工具.保存备份(果.blob);
+
+            if (!落) {
+                /* 用户在文件选择器里点了取消 —— 不是错误，如实说清 */
+                设状态('导出状态行', '导出状态文', '', '已取消保存（数据已打包，可再点一次）');
+                设进度('导出进度槽', '导出进度条', null);
+                提示('已取消保存');
+                return;
+            }
+
+            const 大小 = 工具.字节数文案(果.blob.size);
+            const 有失败 = (果.失败 || []).length > 0;
+            设状态('导出状态行', '导出状态文', 有失败 ? '失败' : '成功',
+                (有失败 ? '已导出，但有 ' + 果.失败.length + ' 项没备到 → ' : '已导出 ') + 落.位置 + '（' + 大小 + '）');
+            设进度('导出进度槽', '导出进度条', null);
+
+            if (有失败) {
+                显示结果('导出完成，但以下内容没能备份', false, 果.失败);
+                提示('导出完成，但有 ' + 果.失败.length + ' 项失败，详见下方清单', true);
+            } else {
+                提示('备份已导出：' + 落.位置, true);
+            }
+        } catch (e) {
+            设状态('导出状态行', '导出状态文', '失败', '导出失败：' + (e && e.message || e));
+            设进度('导出进度槽', '导出进度条', null);
+            提示('导出失败：' + (e && e.message || e), true);
+        } finally {
+            导出中 = false;
+            if (钮) { 钮.disabled = false; 钮.textContent = '导出备份文件'; }
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * 3. 选文件 + 校验
+     * ------------------------------------------------------------- */
+    let 当前包 = null;          // { blob, 名, 检 }
+    let 当前模式 = '覆盖';
+    let 恢复中 = false;
+
+    function 时间文案(iso, 戳) {
+        const d = iso ? new Date(iso) : (戳 ? new Date(戳) : null);
+        if (!d || isNaN(d.getTime())) return '未知';
+        const 补 = n => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + 补(d.getMonth() + 1) + '-' + 补(d.getDate()) +
+            ' ' + 补(d.getHours()) + ':' + 补(d.getMinutes());
+    }
+
+    /** 把包里的内容拼成一句人话 */
+    function 包内容文案(概览, 元) {
+        const 段 = [];
+        if (元 && 元.本地存储键数) 段.push('本地设置 ' + 元.本地存储键数 + ' 项');
+        const 库 = (概览 || 元 && 元.数据库概览) || {};
+        const 名表 = { '音乐库': '音乐', '聊天语音库': '语音', '阅读_书库': '小说', '图片库': '图片' };
+        for (const k of Object.keys(库)) {
+            const 表 = 库[k] || {};
+            let 计 = 0;
+            for (const t of Object.keys(表)) {
+                const v = 表[t];
+                if (typeof v === 'number') 计 += v;
+                else if (v && typeof v.记录数 === 'number') 计 += v.记录数;
+            }
+            if (计 > 0) 段.push((名表[k] || k) + ' ' + 计 + ' 条');
+        }
+        return 段.length ? 段.join('、') : '（未记录明细）';
+    }
+
+    async function 选并校验() {
+        if (恢复中) return;
+        设状态('恢复状态行', '恢复状态文', '忙', '正在读取文件…');
+        try {
+            const 选 = await 工具.选取备份文件();
+            if (!选) {
+                设状态('恢复状态行', '恢复状态文', '', '已取消选择');
+                return;
+            }
+            设状态('恢复状态行', '恢复状态文', '忙', '正在校验备份包…');
+            const 检 = await 工具.检查备份(选.blob);
+
+            当前包 = { blob: 选.blob, 名: 选.名, 检 };
+
+            $('包文件名').textContent = 选.名;
+            $('包大小').textContent = 工具.字节数文案(选.blob.size);
+            $('包时间').textContent = 时间文案(检.元.导出时间, 检.元.导出时间戳);
+            $('包内容').textContent = 包内容文案(检.数据库概览, 检.元);
+            $('包信息').classList.add('显示');
+            $('模式组').classList.add('显示');
+
+            const 钮 = $('恢复钮');
+            if (钮) 钮.disabled = false;
+            设状态('恢复状态行', '恢复状态文', '成功', '校验通过，可以选择恢复方式了');
+            隐藏结果();
+        } catch (e) {
+            当前包 = null;
+            $('包信息').classList.remove('显示');
+            $('模式组').classList.remove('显示');
+            const 钮 = $('恢复钮');
+            if (钮) 钮.disabled = true;
+            设状态('恢复状态行', '恢复状态文', '失败', '这个文件读不了：' + (e && e.message || e));
+            提示('文件校验失败：' + (e && e.message || e), true);
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * 4. 确认层
+     * ------------------------------------------------------------- */
+    let 确认回调 = null;
+    function 要确认(题, 文, 警告, 执行文案, 回调) {
+        $('确认题').textContent = 题;
+        const 文元 = $('确认文');
+        文元.textContent = 文;
+        文元.classList.toggle('警告', !!警告);
+        $('确认执行').textContent = 执行文案 || '确认';
+        确认回调 = 回调;
+        $('确认层').classList.add('显示');
+    }
+    function 关确认() {
+        $('确认层').classList.remove('显示');
+        确认回调 = null;
+    }
+    $('确认取消').addEventListener('click', 关确认);
+    $('确认执行').addEventListener('click', () => {
+        const 回 = 确认回调;
+        关确认();
+        if (回) 回();
+    });
+    /* 点遮罩空白处关闭（点框内不关） */
+    $('确认层').addEventListener('click', e => { if (e.target === $('确认层')) 关确认(); });
+
+    /* ---------------------------------------------------------------
+     * 5. 恢复
+     * ------------------------------------------------------------- */
+    async function 做恢复() {
+        if (恢复中) return;
+        if (!当前包) { 提示('请先选择备份文件'); return; }
+
+        const 覆盖 = 当前模式 === '覆盖';
+        const 后果 = 覆盖
+            ? '本机上现有的联系人、聊天记录、动态、音乐、语音、小说都会被清空，然后写入这份备份里的全部内容。这一步无法撤销。'
+            : '备份里的内容会写入本机，同名项以备份为准；备份里没有的本机数据会保留。';
+
+        要确认(
+            覆盖 ? '确认覆盖恢复？' : '确认合并恢复？',
+            后果 + '（备份导出于 ' + 时间文案(当前包.检.元.导出时间, 当前包.检.元.导出时间戳) + '）',
+            覆盖, '确认恢复', 执行恢复
+        );
+    }
+
+    async function 执行恢复() {
+        恢复中 = true;
+        const 钮 = $('恢复钮'), 选钮 = $('选文件钮');
+        if (钮) { 钮.disabled = true; 钮.textContent = '正在恢复…'; }
+        if (选钮) 选钮.disabled = true;
+        隐藏结果();
+        设进度('恢复进度槽', '恢复进度条', 0, 1);
+        设状态('恢复状态行', '恢复状态文', '忙', '正在写入数据…');
+
+        try {
+            const 果 = await 工具.恢复备份(当前包.blob, {
+                模式: 当前模式,
+                进度: (阶段, 已, 总) => {
+                    设状态('恢复状态行', '恢复状态文', '忙', 阶段);
+                    设进度('恢复进度槽', '恢复进度条', 已, 总);
+                },
+            });
+
+            设进度('恢复进度槽', '恢复进度条', null);
+
+            const 有失败 = (果.失败 || []).length > 0;
+            const 库计 = Object.keys(果.库写入 || {}).reduce((n, k) => {
+                const 表 = 果.库写入[k] || {};
+                for (const t of Object.keys(表)) n += (表[t] || 0);
+                return n;
+            }, 0);
+
+            设状态('恢复状态行', '恢复状态文', 有失败 ? '失败' : '成功',
+                (有失败 ? '恢复完成，但有 ' + 果.失败.length + ' 项失败' : '恢复完成') +
+                '：本地设置 ' + 果.本地写入 + ' 项、数据库 ' + 库计 + ' 条');
+
+            if (有失败) {
+                显示结果('恢复完成，但以下内容没写进去', false, 果.失败);
+                提示('恢复完成，但有 ' + 果.失败.length + ' 项失败，详见下方清单', true);
+            } else {
+                显示结果('恢复完成：本地设置 ' + 果.本地写入 + ' 项、数据库 ' + 库计 + ' 条，全部写入成功', true, []);
+                提示('恢复完成，请刷新页面查看', true);
+            }
+
+            /* ★ 刷新概况：本机数据已经变了，不刷会一直显示旧数字 */
+            await 刷新概况();
+
+            /* ★★ 恢复后各页面 DOM 还是旧数据，必须让用户刷新。
+               给一个明确的按钮比只弹 toast 可靠 —— toast 会消失，
+               用户可能没看见就把页面切走了，然后以为恢复没生效。 */
+            要确认('恢复完成，需要刷新',
+                '数据已经写回本机。刷新后其它页面才会显示恢复出来的内容。',
+                false, '立即刷新', () => { location.reload(); });
+        } catch (e) {
+            设状态('恢复状态行', '恢复状态文', '失败', '恢复失败：' + (e && e.message || e));
+            设进度('恢复进度槽', '恢复进度条', null);
+            提示('恢复失败：' + (e && e.message || e), true);
+        } finally {
+            恢复中 = false;
+            if (钮) { 钮.disabled = false; 钮.textContent = '恢复这份备份'; }
+            if (选钮) 选钮.disabled = false;
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * 6. 事件绑定
+     * ------------------------------------------------------------- */
+    $('导出钮').addEventListener('click', 做导出);
+    $('选文件钮').addEventListener('click', 选并校验);
+    $('恢复钮').addEventListener('click', 做恢复);
+
+    /* 模式单选 */
+    Array.from(document.querySelectorAll('.模式项')).forEach(项 => {
+        项.addEventListener('click', () => {
+            document.querySelectorAll('.模式项').forEach(x => x.classList.remove('选中'));
+            项.classList.add('选中');
+            当前模式 = 项.dataset.模式 || '覆盖';
+        });
+    });
+
+    /* 返回：按 ?from= 回来源页，缺省回「我的」（本页入口在 8 页设置区） */
+    $('返回按钮').addEventListener('click', () => {
+        const from = new URLSearchParams(location.search).get('from');
+        const 表 = { '1': '1_shouyeyulan.html', '4': '4_tongxun.html', '5': '5_dongtai.html', '8': '8_wode.html' };
+        location.href = 表[from] || '8_wode.html';
+    });
+
+    /* ---------------------------------------------------------------
+     * 7. 初始化
+     * ------------------------------------------------------------- */
+    /* 如实显示当前环境会把备份落到哪 —— 不能让用户以为一定能自选文件夹 */
+    const 方式文 = $('导出方式文');
+    if (方式文) 方式文.textContent = '保存方式：' + 工具.落地方式说明();
+
+    刷新概况().catch(e => {
+        设状态('导出状态行', '导出状态文', '失败', '读取本机数据失败：' + (e && e.message || e));
+    });
+
+    /* 页面重新可见时刷新概况（从别处返回本页，数据可能已变） */
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && !恢复中) 刷新概况().catch(() => {});
+    });
+
+    /* 测试 / 调试用探针：确认页面脚本起来了，且能驱动导出恢复 */
+    window.__备份页 = {
+        刷新概况, 做导出, 选并校验, 做恢复, 执行恢复,
+        取当前包: () => 当前包,
+        设当前包: v => { 当前包 = v; },
+        取模式: () => 当前模式,
+        设模式: v => { 当前模式 = v; },
+        导出中: () => 导出中,
+        恢复中: () => 恢复中,
+    };
+})();
+    </script>
+
+<script>
+/* ===== 主题背景：读全局设置（由 9_zhutishezhi.html 写入，全站共用）=====
+   ① 自定义：直接用 dataURL
+   ② 内置：按索引取 2【图片】 下的主题（0 = 默认主题背景，1~5 = 背景1~背景5）
+      扩展名自动探测 png → jpg → jpeg → webp，素材不是 png 也显示得出来
+   ③ 没设置 / 索引为 0：保持页面里写死的默认图，不动 */
+(function () {
+    var 图 = document.querySelector('.主题背景图片');
+    if (!图) return;
+    var 存 = null;
+    try { 存 = JSON.parse(localStorage.getItem('主题背景') || 'null'); } catch (e) {}
+    if (!存) return;
+
+    if (存.源 === '自定义' && 存.数据) { 图.src = 存.数据; return; }
+
+    if (存.源 === '默认' && typeof 存.索引 === 'number' && 存.索引 > 0) {
+        var 名 = '背景' + 存.索引;
+        var 候选 = ['png', 'jpg', 'jpeg', 'webp'], 序 = 0;
+        图.addEventListener('error', function () {
+            if (序 < 候选.length) 图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+        });
+        图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+    }
+})();
+</script>
+    <script id="全局音乐">
+/* =============================================================================
+ * 全局音乐.js —— 跨页续播（4 页开始播，切到任何界面都不中断）
+ *
+ * 【为什么需要它】
+ *   4_tongxun 有自己的完整 UI 播放器，但 HTML 页面之间是真跳转：
+ *   一离开 4 页，整个 JS 上下文连同 <audio> 一起被销毁，音乐就断了。
+ *   本脚本在每个页面挂一个「无界面的续播器」：进来先读存档，
+ *   如果上次是在播，就重建 audio、跳回原秒数、接着播。
+ *
+ * 【它不是什么】
+ *   不做 UI、不做播放列表 —— 那些是 4 页播放器的职责。
+ *   这里只负责「让声音不断」，回到 4 页时完整播放器会自然接手。
+ *
+ * 【契约（改这里前务必看）】
+ *   ① 存档键 '音乐播放状态'，格式必须与 4 页 保存状态() 完全一致：
+ *        { id, 名, 类型:'默认'|'上传', 时间:秒, 播放中:bool }
+ *      —— 两边都写、都读同一个键，才能无缝交接。
+ *   ② ★ 让位规则：页面里若存在 #音乐播放器（4 页的），本脚本【完全不启动】。
+ *      否则两个 audio 会同时出声。这是唯一的冲突防线，别删。
+ *   ③ 上传曲目在 IndexedDB：库名 '音乐库' / 表名 '音频'（与 4 页同名同结构）。
+ *
+ * 【让位 API（其它页面调用）】
+ *   window.全局音频.暂停('语音消息') / .恢复('语音消息')
+ *   window.全局音频.暂停('语音通话') / .恢复('语音通话')
+ *   7 页播语音条、14 页通话时分别调用，避免两路声音叠在一起。
+ *   ★ 用【原因集合】而非布尔：语音与通话可能重叠，布尔会在语音播完时
+ *     把仍在通话中的音乐放出来。全部原因解除才恢复。
+ *   ★ 会记住「占用前是否在播」，本来没放音乐就不会凭空启动。
+ *
+ * 【自动播放限制】
+ *   浏览器会拦「没有用户手势的自动播放」。被拦时不报错、不打断，
+ *   改为监听页面上第一次 pointerdown / touchstart 补播一次
+ *   —— 与 4 页 尝试续播() 同一个套路。
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    const 状态键 = '音乐播放状态';
+    const 目录候选 = ['1【音乐】/', '../1【音乐】/'];   // 与 4 页一致：html 挪进子文件夹时自动回退
+    const 库名 = '音乐库';
+    const 表名 = '音频';
+
+    /* ---------------------------------------------------------------
+     * IndexedDB：只为拿上传曲目的 blob，读不到就 null（调用方兜底）
+     * ------------------------------------------------------------- */
+    function 打开库() {
+        return new Promise((完成, 失败) => {
+            if (typeof indexedDB === 'undefined') return 失败(new Error('无 IndexedDB'));
+            let 请求;
+            try { 请求 = indexedDB.open(库名, 1); } catch (e) { return 失败(e); }
+            请求.onupgradeneeded = () => {
+                const db = 请求.result;
+                if (!db.objectStoreNames.contains(表名)) db.createObjectStore(表名, { keyPath: 'id' });
+            };
+            请求.onsuccess = () => 完成(请求.result);
+            请求.onerror = () => 失败(请求.error || new Error('打开失败'));
+        });
+    }
+
+    function 读一条(id) {
+        return 打开库().then(db => new Promise((完成, 失败) => {
+            const 事务 = db.transaction(表名, 'readonly');
+            const 请求 = 事务.objectStore(表名).get(id);
+            请求.onsuccess = () => 完成(请求.result || null);
+            请求.onerror = () => 失败(请求.error);
+        })).catch(() => null);
+    }
+
+    /* ---------------------------------------------------------------
+     * 存档读写
+     * ------------------------------------------------------------- */
+    function 读状态() {
+        try { return JSON.parse(localStorage.getItem(状态键) || 'null'); } catch (e) { return null; }
+    }
+
+    function 写状态(存) {
+        try { localStorage.setItem(状态键, JSON.stringify(存)); } catch (e) {}
+    }
+
+    /* ---------------------------------------------------------------
+     * 主体
+     * ------------------------------------------------------------- */
+    const 元素id = '全局音乐播放器';
+
+    /* =========================================================================
+     * ★ 占用管理：语音消息 / 语音通话 出声时，背景音乐让位
+     *
+     *   为什么用 Set 而不是布尔：两种占用可能重叠（比如播着语音条的同时来电话）。
+     *   布尔会在「语音播完恢复」时把仍在通话中的音乐也放出来。
+     *   记成「原因集合」，全部解除才恢复 —— 这是这类让位逻辑的正确写法。
+     *
+     *   另外要记住【占用前是否在播】：如果本来就没放音乐，
+     *   语音播完不该把音乐凭空启动。
+     * ======================================================================= */
+    const 占用 = new Set();
+    let 占用前在播 = false;
+    /* ★ 声明在 IIFE 顶层而不是 启动() 内：页尾探针 __全局音乐.补播中() 要访问它，
+         放在 启动() 里的话外层作用域取不到（TDZ / 未定义）。 */
+    let 补播中 = false;
+
+    /** 4 页让位时，操作目标是它自己的 #音乐播放器；否则是本脚本建的那个 */
+    function 取音频() {
+        return document.getElementById('音乐播放器') || document.getElementById(元素id);
+    }
+
+    const 全局音频 = {
+        /** 暂停背景音乐（可重入；同一原因重复调用无害） */
+        暂停(原因) {
+            const 键 = 原因 || '未命名';
+            if (占用.size === 0) {
+                const a = 取音频();
+                占用前在播 = !!a && !a.paused;
+            }
+            占用.add(键);
+            const a = 取音频();
+            if (a && !a.paused) { try { a.pause(); } catch (e) {} }
+        },
+
+        /** 解除某个占用；全部解除且占用前在播 → 恢复播放 */
+        恢复(原因) {
+            const 键 = 原因 || '未命名';
+            if (!占用.has(键)) return;
+            占用.delete(键);
+            if (占用.size > 0) return;              // 还有别的占用（比如仍在通话）
+            if (!占用前在播) return;                 // 本来就没在播 → 不凭空启动
+            const a = 取音频();
+            if (a && a.paused) {
+                const 试 = a.play();
+                if (试 && typeof 试.catch === 'function') 试.catch(() => {});
+            }
+        },
+
+        /** 强制清掉所有占用（异常路径兜底用） */
+        清除() { 占用.clear(); },
+
+        占用中() { return 占用.size > 0; },
+        占用表() { return Array.from(占用); },
+        是否在播() { const a = 取音频(); return !!a && !a.paused; },
+    };
+    /* ★ 无论让不让位都挂上：让位时它操作的是 4 页自己的播放器，
+       调用方（语音条 / 通话）不必关心自己在哪个页面。 */
+    window.全局音频 = 全局音频;
+
+    function 启动() {
+        /* ★★ 让位：4 页有完整播放器（#音乐播放器），这里绝不能再建第二个 audio。
+              注意 7 页那个是 #语音播放器（点语音消息用的），与本脚本无关，
+              各播各的，所以【只】认 #音乐播放器 这一个 id。 */
+        if (document.getElementById('音乐播放器')) return;
+        /* 防重：脚本万一被引了两次，也只建一个 audio */
+        if (document.getElementById(元素id)) return;
+
+        const 存 = 读状态();
+        // 没在播（或压根没播过）→ 安静退出，不建元素、不占资源
+        if (!存 || !存.播放中 || !存.名) return;
+
+        const 音频 = document.createElement('audio');
+        音频.id = 元素id;
+        音频.dataset.全局音乐 = '1';        // 便于排查 / 测试定位
+        音频.preload = 'metadata';
+        document.body.appendChild(音频);
+
+        const 目标 = Math.max(0, Number(存.时间) || 0);
+        let 已定位 = false;      // loadedmetadata 只处理一次（切目录会重复触发）
+        let 目录序 = 0;
+        let 上传链接 = '';
+
+        /* 跳回上次的秒数再播。★ 先 seek 后 play：
+           否则会从 0 开始，听感上像换了一首。 */
+        音频.addEventListener('loadedmetadata', () => {
+            if (已定位) return;
+            已定位 = true;
+            const 长 = isFinite(音频.duration) ? 音频.duration : 0;
+            try {
+                音频.currentTime = 长 > 0
+                    ? Math.min(目标, Math.max(0, 长 - 0.3))
+                    : 目标;
+            } catch (e) {}
+            续播();
+        });
+
+        /* 目录逐个试：与 4 页 载入当前目录() 同款（文件缺失 / 解码失败都能兜住） */
+        音频.addEventListener('error', () => {
+            if (目录序 < 目录候选.length) {
+                音频.src = encodeURI(目录候选[目录序++] + 存.名);
+            }
+        });
+
+        /* 播完了：不自动切歌（这里没有播放列表），停住并把状态改成「没在播」，
+           免得下一次进任意页面又从头播一遍。 */
+        音频.addEventListener('ended', () => {
+            写状态({ id: 存.id, 名: 存.名, 类型: 存.类型, 时间: 0, 播放中: false });
+        });
+
+        /* ---- 进度回写：下一页（或回到 4 页）要靠它续上 ---- */
+        function 存一次(播放中) {
+            写状态({
+                id: 存.id, 名: 存.名, 类型: 存.类型,
+                时间: 音频.currentTime || 0,
+                /* ★ 同 4 页那个坑：只认真正的布尔。pagehide / beforeunload
+                     的监听器会把 Event 对象当第一个参数传进来，
+                     `播放中 === undefined` 拦不住它 → `!!Event` = true。 */
+                播放中: typeof 播放中 !== 'boolean' ? !音频.paused : 播放中,
+            });
+        }
+        // 播着的时候每秒存一次，中途崩溃 / 强杀也不会丢太多
+        setInterval(() => { if (!音频.paused) 存一次(true); }, 1000);
+        // 离开页面再存一次：跳转、切后台、关闭三种情况都覆盖
+        const 存一次同步 = () => 存一次();
+        window.addEventListener('pagehide', 存一次同步);
+        window.addEventListener('beforeunload', 存一次同步);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') 存一次同步();
+        });
+
+        /* ------------------------------------------------------------
+         * 补播：浏览器会拦「没有用户手势」的自动播放，这是硬限制，绕不过去。
+         *   策略：
+         *     ① 直接播；
+         *     ② 被拒 → 【持续】监听用户交互，直到真的播起来才撤监听；
+         *     ③ 期间挂一个可见小条，告诉用户「点一下继续」。
+         *   ★★ 关键：不能用 once:true。那一次点击可能仍被拒（或音频还没
+         *      ready），失败后就再也没机会了 —— 表现正是「切过去没声音」。
+         *      必须【成功才停】，这是这段里最要紧的一句。
+         * ---------------------------------------------------------- */
+        const 事件名 = ['pointerdown', 'touchstart', 'click', 'keydown'];
+
+        function 撤补播() {
+            if (!补播中) return;
+            补播中 = false;
+            事件名.forEach(n => document.removeEventListener(n, 试补播, true));
+            document.removeEventListener('visibilitychange', 见可见);
+            收提示();
+        }
+
+        function 见可见() {
+            if (document.visibilityState === 'visible') 试补播();
+        }
+
+        function 试补播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();                     // 老浏览器无 Promise：当成功处理
+        }
+
+        /** 被拦 → 挂持续监听 + 显示提示条 */
+        function 展提示() {
+            if (!补播中) {
+                补播中 = true;
+                /* ★ 捕获阶段：冒泡阶段可能被页面自己的 stopPropagation 吃掉 */
+                事件名.forEach(n => document.addEventListener(n, 试补播, true));
+                document.addEventListener('visibilitychange', 见可见);
+            }
+            亮提示();
+        }
+
+        /* ---- 提示条：自建，不依赖各页自己的 toast 实现（各页不统一）---- */
+        let 提示元素 = null;
+        function 亮提示() {
+            if (提示元素) return;
+            const 条 = document.createElement('div');
+            条.id = '全局音乐提示';
+            条.textContent = '♪ 音乐已就绪，点一下继续播放';
+            // 样式全内联 + !important：各页 CSS 互不统一，不这样会被盖掉 / 变形
+            条.setAttribute('style', [
+                'position:fixed', 'left:50%', 'bottom:16px', 'transform:translateX(-50%)',
+                'z-index:99999', 'padding:8px 14px', 'border-radius:999px',
+                'background:rgba(28,28,32,0.86)', 'color:#fff', 'font-size:12px',
+                'letter-spacing:.3px', 'pointer-events:none',
+                'box-shadow:0 4px 16px rgba(0,0,0,.2)',
+                'transition:opacity .25s', 'opacity:0',
+                'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif',
+            ].join('!important;') + '!important');
+            document.body.appendChild(条);
+            提示元素 = 条;
+            setTimeout(() => { if (提示元素) 提示元素.style.opacity = '1'; }, 20);
+            setTimeout(收提示, 8000);           // 8 秒后自动收，别一直杵着
+        }
+        function 收提示() {
+            if (!提示元素) return;
+            const 条 = 提示元素;
+            提示元素 = null;
+            条.style.opacity = '0';
+            setTimeout(() => { if (条.parentNode) 条.parentNode.removeChild(条); }, 300);
+        }
+
+        function 续播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { 展提示(); return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();
+        }
+
+        // 播起来了就收掉提示（例如用户从别处触发了播放）
+        音频.addEventListener('play', 撤补播);
+
+        /* ---- 载入：上传曲目走 blob URL，其余按目录拼路径 ---- */
+        function 载入默认() {
+            目录序 = 0;
+            音频.src = encodeURI(目录候选[目录序++] + 存.名);
+        }
+
+        if (存.类型 === '上传' && 存.id) {
+            读一条(存.id).then(记录 => {
+                if (记录 && 记录.数据) {
+                    try {
+                        上传链接 = URL.createObjectURL(记录.数据);
+                        音频.src = 上传链接;
+                        return;
+                    } catch (e) {}
+                }
+                载入默认();          // 读不到（库被清了）→ 退回按名字找文件
+            });
+        } else {
+            载入默认();
+        }
+    }
+
+    /* DOM 就绪再跑：4 页的 #音乐播放器 也在 body 里，早了会误判成「没有」
+       → 两个 audio 同时出声。 */
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    // 测试 / 调试用：暴露一个只读探针，验证脚本确实起来了
+    window.__全局音乐 = {
+        键: 状态键,
+        元素id: 元素id,
+        让位条件: () => !!document.getElementById('音乐播放器'),
+        占用: 全局音频.占用表,
+        补播中: () => 补播中,
+    };
+})();
+    </script>
+    <script id="软键盘适配">
+/* =============================================================================
+ * 软键盘适配.js —— 让输入框在手机输入法弹出时始终可见
+ *
+ * 【要解决什么】
+ *   全站每个页面都是「100dvh 的固定容器 + 中间滚动区 + 底部固定区」的结构：
+ *       .手机主题背景容器 { height: 100dvh; overflow: hidden; display:flex; column }
+ *         ├── .顶部固定区      (flex-shrink: 0)
+ *         ├── .手机界面内容    (flex: 1; overflow-y: auto)  ← 唯一滚动区
+ *         └── .底部输入区      (flex-shrink: 0)
+ *   容器高度被 100dvh 硬锁死，所以输入法一弹出：
+ *     · iOS Safari：layout viewport 不变，visual viewport 被键盘吃掉一块，
+ *       容器高度纹丝不动 → 底部输入区整个被键盘盖住。
+ *     · Android Chrome（resize 模式）：innerHeight 会变小，dvh 跟着变，
+ *       容器自动变矮 → 但只在部分浏览器成立，换一家就打回原形。
+ *   同一套代码在两家表现不一样，正是这次要抹平的东西。
+ *
+ * 【核心思路：只信 visualViewport】
+ *   键盘高度 = 基准布局高 − visualViewport.height − visualViewport.offsetTop
+ *   然后把容器高度直接设成 visualViewport.height，并整体平移 offsetTop。
+ *   —— 不猜机型、不猜浏览器，只认「当前真正能看见的这块矩形」，
+ *      所以 iOS / Android / 各家输入法走的都是同一条代码路径。
+ *
+ *   ★ 基准布局高不是实时的 window.innerHeight —— 这是最容易写错的一处。
+ *     Android 键盘弹出时 innerHeight 本身就会变小，拿实时 innerHeight 去减
+ *     visualViewport.height 会得到 0，等于永远检测不到键盘（典型的「安卓没效果」）。
+ *     基准只在「确认键盘收起」时更新，弹出期间冻结。
+ *
+ * 【两件事一起做，缺一个都会漏】
+ *   ① 容器自适应：解决「底部常驻输入区被盖」（7 页的 .底部输入区）
+ *   ② 焦点滚入可视：解决「滚动区里的输入框被盖」（2 / 11 / 19~22 页的表单）
+ *
+ * 【四条硬约束（需求点，改动时别破）】
+ *   ① 不抖动：高度变化 ≤ 2px 不写样式；所有写入合并进一帧 rAF；
+ *              键盘判定阈值 80px，避开地址栏收起、工具栏隐藏这类假信号。
+ *   ② 不丢焦点：全程不 blur、不重建 DOM、不动 tabindex、不改 DOM 顺序。
+ *   ③ 不整页滚：绝不用 window.scrollTo 做补偿 —— 那会让 iOS 整个 layout
+ *      viewport 上移，顶部被切掉且松手后弹不回来。只改容器高度与
+ *      「最近的可滚动祖先」的 scrollTop。
+ *   ④ 不硬编码机型：没有 User-Agent 判断，没有 iOS / Android 分支。
+ *
+ * 【降级】
+ *   没有 visualViewport（老浏览器）→ 退回 window.resize + innerHeight 比对。
+ *   再不行 → 什么都不做，恢复成页面原本的样子（不会更糟）。
+ *
+ * 【对外 API（业务与测试用）】
+ *   window.软键盘.是否弹出()   → bool
+ *   window.软键盘.键盘高度()   → 像素
+ *   window.软键盘.校准()       → 立刻重算一次（比如弹窗关闭后）
+ *   window.软键盘.让位(px)     → 声明额外的底部占用（如自定义输入条），
+ *                                容器会再让出这么多高度
+ *   window.软键盘._喂(...)     → 测试用：直接喂一个可视区矩形
+ *
+ * ★★ 本文件是唯一源。改完跑：python3 同步软键盘.py
+ *     （与 全局音乐.js / 音频助手.js 同一套内联同步机制）
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    /* ------------------------------------------------------------------
+     * 常量
+     * ---------------------------------------------------------------- */
+    const 容器类名 = '手机主题背景容器';
+    const 弹出阈值 = 80;      // 键盘高度超过它才认定「键盘弹出了」
+    const 变化阈值 = 2;       // 高度变化不超过它就不写样式，省掉无意义的重排
+    const 底部余量 = 14;      // 焦点元素与可视区底部之间留的呼吸位
+    const 顶部余量 = 8;
+    const 类名键已弹 = '软键盘已弹出';
+    const 样式id = '软键盘适配样式';
+
+    const vv = (typeof window.visualViewport === 'object' && window.visualViewport)
+        ? window.visualViewport : null;
+
+    /* ------------------------------------------------------------------
+     * 状态
+     * ---------------------------------------------------------------- */
+    let 容器 = null;
+    let 基准高 = 0;           // 「键盘收起时」的布局高度，弹出期间冻结
+    let 已弹出 = false;
+    let 上次可视高 = 0;
+    let 上次偏移 = 0;
+    let 帧 = 0;               // rAF 句柄，用于合并
+    let 额外让位 = 0;         // window.软键盘.让位() 设进来的额外高度
+    let 焦点 = null;          // 最近一次聚焦的输入元素
+
+    /* ------------------------------------------------------------------
+     * 小工具
+     * ---------------------------------------------------------------- */
+    function 是输入框(el) {
+        if (!el || !el.tagName) return false;
+        const 标签 = el.tagName.toLowerCase();
+        return 标签 === 'input' || 标签 === 'textarea'
+            || (标签 === 'div' && el.isContentEditable === true);
+    }
+
+    /** 找容器：优先类名（全站统一），退化到 body 的唯一直接子元素 */
+    function 找容器() {
+        if (容器 && 容器.isConnected) return 容器;
+        容器 = document.querySelector('.' + 容器类名) || null;
+        return 容器;
+    }
+
+    function 可视顶() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+    function 可视底() {
+        if (vv) return (vv.offsetTop || 0) + vv.height;
+        return (window.scrollY || 0) + window.innerHeight;
+    }
+    function 当前可视高() { return vv ? vv.height : window.innerHeight; }
+    function 当前偏移() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+
+    /* ------------------------------------------------------------------
+     * 注入样式：只在键盘弹出时生效，收起即移除，不留残余
+     * ---------------------------------------------------------------- */
+    function 装样式() {
+        if (document.getElementById(样式id)) return;
+        const 样式 = document.createElement('style');
+        样式.id = 样式id;
+        /* ★ 用 class 而不是内联 style：收起时摘掉 class 就能还原，
+             不用逐个记住页面原本的 align-items / padding 是多少。 */
+        样式.textContent =
+            'html.' + 类名键已弹 + ' body{align-items:flex-start !important;}\n' +
+            'html.' + 类名键已弹 + ' .' + 容器类名 + '{padding-bottom:0 !important;}\n';
+        (document.head || document.documentElement).appendChild(样式);
+    }
+
+    /* ------------------------------------------------------------------
+     * 核心：把容器压到「真正看得见」的那块矩形里
+     * ---------------------------------------------------------------- */
+    function 应用() {
+        const 盒 = 找容器();
+        if (!盒) return;
+
+        const 可视高 = 当前可视高();
+        const 偏移 = 当前偏移();
+
+        if (!基准高) 基准高 = window.innerHeight || 可视高;
+
+        /* ★★ 键盘高度：基准 − 可视高 − 偏移。
+              基准在弹出期间冻结，所以 Android 那种「innerHeight 自己也会缩」
+              的情况同样算得出来。 */
+        let 键盘 = 基准高 - 可视高 - 偏移;
+        if (键盘 < 0) 键盘 = 0;
+
+        const 弹出 = 键盘 > 弹出阈值;
+
+        /* 状态没变、且可视高几乎没动 → 什么都不做（防抖动的第①道闸） */
+        if (弹出 === 已弹出
+            && Math.abs(可视高 - 上次可视高) <= 变化阈值
+            && Math.abs(偏移 - 上次偏移) <= 变化阈值) {
+            if (弹出) 校准焦点();
+            return;
+        }
+
+        上次可视高 = 可视高;
+        上次偏移 = 偏移;
+        已弹出 = 弹出;
+
+        const 根 = document.documentElement;
+        const 体 = document.body;
+
+        if (弹出) {
+            装样式();
+            if (!根.classList.contains(类名键已弹)) 根.classList.add(类名键已弹);
+
+            /* 容器高度 = 真正看得见的高度（再减去业务声明的额外让位） */
+            const 目标高 = Math.max(120, 可视高 - 额外让位);
+            盒.style.height = 目标高 + 'px';
+            盒.style.minHeight = 目标高 + 'px';
+            /* 跟着 visualViewport 的偏移走（iOS 页面被上推时靠它归位） */
+            盒.style.transform = (偏移 ? 'translateY(' + 偏移 + 'px)' : '');
+
+            /* ③ 不整页滚：只在系统确实把 layout viewport 推走时温和拉回原点。
+                 阈值 4px 是为了不跟正常的 1~2px 抖动打架。 */
+            if (!vv && (window.pageYOffset || 0) > 4 && 体) {
+                const 体溢出 = window.getComputedStyle(体).overflow;
+                if (体溢出 === 'hidden' || 体溢出 === 'clip') window.scrollTo(0, 0);
+            }
+        } else {
+            /* 收起：摘 class、清掉所有内联改动，回到页面原本的样子 */
+            if (根.classList.contains(类名键已弹)) 根.classList.remove(类名键已弹);
+            盒.style.height = '';
+            盒.style.minHeight = '';
+            盒.style.transform = '';
+            /* 收起时基准可以放心更新 —— 此刻量到的就是「无键盘」的真实高度 */
+            基准高 = window.innerHeight || 可视高;
+        }
+
+        /* 容器变矮之后滚动区也变矮，焦点元素可能又落到可视区外 → 再校准一次 */
+        校准焦点();
+    }
+
+    /** 合并到下一帧，避免 resize 连发时反复读写布局 */
+    function 排一帧() {
+        if (帧) return;
+        const 跑 = window.requestAnimationFrame
+            || function (f) { return setTimeout(f, 16); };
+        帧 = 跑(function () { 帧 = 0; 应用(); });
+    }
+
+    /* ------------------------------------------------------------------
+     * ② 焦点滚入可视
+     * ---------------------------------------------------------------- */
+    /** 向上找最近一个「真的能滚」的祖先 */
+    function 找滚动祖先(el) {
+        let n = el ? el.parentElement : null;
+        while (n && n !== document.body && n !== document.documentElement) {
+            const 样式 = window.getComputedStyle(n);
+            const 可滚 = /(auto|scroll|overlay)/.test(样式.overflowY || '');
+            if (可滚 && n.scrollHeight > n.clientHeight + 1) return n;
+            n = n.parentElement;
+        }
+        return null;
+    }
+
+    /**
+     * 把焦点元素挪进可视区。
+     * ★ 只动「最近滚动祖先」的 scrollTop —— 不动 window，避免整页位移。
+     * ★ 元素本来就在可视区里时什么都不做，不会没事乱滚。
+     */
+    function 校准焦点() {
+        const el = 焦点 || document.activeElement;
+        if (!是输入框(el)) return;
+        if (!找容器()) return;
+
+        const 矩形 = el.getBoundingClientRect();
+        if (!矩形.height && !矩形.top) return;      // 还没布局完，跳过
+
+        const 下界 = 可视底() - 底部余量;
+        const 上界 = 可视顶() + 顶部余量;
+
+        let 差 = 0;
+        if (矩形.bottom > 下界) 差 = 矩形.bottom - 下界;
+        else if (矩形.top < 上界) 差 = 矩形.top - 上界;
+
+        if (Math.abs(差) <= 1) return;
+
+        const 滚动父 = 找滚动祖先(el);
+        /* 不在任何滚动区里（比如底部常驻输入区）：容器已经跟着可视区收缩了，
+           理论上不该再超出。真超了也不碰 window —— 那才是抖动的根源。 */
+        if (滚动父) 滚动父.scrollTop += 差;
+    }
+
+    /* ------------------------------------------------------------------
+     * 事件
+     * ---------------------------------------------------------------- */
+    function 起监听() {
+        /* ① visualViewport：键盘弹出 / 收起 / 页面被上推 都走这里，逐帧跟随 */
+        if (vv) {
+            vv.addEventListener('resize', 排一帧);
+            vv.addEventListener('scroll', function () {
+                /* iOS 键盘弹出时若系统把 layout viewport 推走，offsetTop 会变，
+                   这里同步一下容器位置，避免顶部被切掉。 */
+                if (已弹出) 排一帧();
+            });
+        }
+
+        /* ② 降级：没有 visualViewport 的老浏览器，靠 window.resize */
+        window.addEventListener('resize', 排一帧);
+
+        /* ③ 方向变化：横竖屏切换后基准要重测 */
+        window.addEventListener('orientationchange', function () {
+            基准高 = 0;
+            setTimeout(排一帧, 120);
+        });
+
+        /* ④ 聚焦：记下元素并立刻校准一次。
+             键盘弹出是异步动画（iOS 约 250ms），所以这里先做一次「预防性」校准，
+             随后 visualViewport.resize 每帧触发时会继续跟着校准到最终位置。 */
+        document.addEventListener('focusin', function (e) {
+            if (!是输入框(e.target)) return;
+            焦点 = e.target;
+            /* 先测一次基准：此刻键盘还没弹，量到的正是无键盘高度 */
+            if (!已弹出) 基准高 = window.innerHeight || 当前可视高();
+            setTimeout(排一帧, 30);
+        }, true);
+
+        /* ⑤ 失焦：键盘收起由 resize 兜底，这里只清记录、不主动改布局
+              —— 切到下一个输入框时 focusin 会立刻接手，不会闪。 */
+        document.addEventListener('focusout', function (e) {
+            if (焦点 === e.target) 焦点 = null;
+        }, true);
+
+        /* ⑥ 切后台回来：尺寸可能已经变了 */
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) { 基准高 = 0; 排一帧(); }
+        });
+    }
+
+    /* ------------------------------------------------------------------
+     * 启动
+     * ---------------------------------------------------------------- */
+    function 启动() {
+        找容器();
+        基准高 = window.innerHeight || 当前可视高();
+        上次可视高 = 当前可视高();
+        上次偏移 = 当前偏移();
+        起监听();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    /* ------------------------------------------------------------------
+     * 对外 API
+     * ---------------------------------------------------------------- */
+    window.软键盘 = {
+        是否弹出: function () { return 已弹出; },
+        键盘高度: function () {
+            return Math.max(0, 基准高 - 当前可视高() - 当前偏移());
+        },
+        校准: 排一帧,
+        /** 业务声明额外的底部占用（例如自定义输入条），容器再让出这么多 */
+        让位: function (px) {
+            额外让位 = Math.max(0, Number(px) || 0);
+            排一帧();
+        },
+        /**
+         * 测试用：直接喂一个「可视区矩形」，跳过真实环境探测。
+         *   _喂(可视高, 偏移, 布局高)
+         * · 有 visualViewport：改它的 height / offsetTop
+         * · 没有（降级路径）：改 window.innerHeight
+         * 两种都是测试替身走的同一条代码路径，所以断言对真机同样成立。
+         */
+        _喂: function (可视高, 偏移, 布局高) {
+            if (typeof 布局高 === 'number' && 布局高 > 0) 基准高 = 布局高;
+            上次可视高 = -999;                 // 强制通过变化阈值，保证一定重算
+            if (vv) {
+                try {
+                    vv.height = 可视高;
+                    vv.offsetTop = 偏移 || 0;
+                } catch (e) {
+                    Object.defineProperty(vv, 'height', { value: 可视高, configurable: true });
+                    Object.defineProperty(vv, 'offsetTop', { value: 偏移 || 0, configurable: true });
+                }
+            } else {
+                try { window.innerHeight = 可视高; } catch (e) {
+                    Object.defineProperty(window, 'innerHeight',
+                        { value: 可视高, configurable: true, writable: true });
+                }
+            }
+            应用();
+            return true;
+        },
+        /** 测试用：当前容器被压到的高度（内联样式里的值，未设置则空串） */
+        _容器高: function () {
+            const 盒 = 找容器();
+            return 盒 ? (盒.style.height || '') : null;
+        },
+    };
+})();
+    </script>
+</body>
+</html>

@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<!--
+    12_zhuanzhang —— 转账（独立全屏界面，不是弹窗）
+
+    入口：7_liaotian 功能条点「转账」→ 12_zhuanzhang.html?id=xxx&sid=xxx[&type=group]&name=昵称&back=7页地址
+    ★ 群聊（type=group）【不是 AA 收款】—— 照微信：先选一位群成员，再转账给他。
+      气泡里会写「转账给 XXX」，跟单聊是同一套界面，只是多一步选人。
+    ★ 不直接写聊天记录 —— 只把卡片丢进 localStorage「待发消息_<sid>」，
+      由 7 页回来时统一落地（入表 / 写盘 / 同步会话 / 重绘），
+      免得三份功能页各自实现一遍、格式写歪了互相读不懂。
+    ★ 返回（顶栏返回 / 系统返回键）→ 回 back 指定的 7 页地址，不落消息。
+
+    风格：与 1~11 页统一（同色板、毛玻璃、灰描边、深灰强调）。
+-->
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>转账</title>
+    <style>
+        /* ===== 统一色板（与 1~11 页完全一致） ===== */
+        :root {
+            --ink: #333336;
+            --ink-2: #55555a;
+            --ink-3: #7a7a80;
+            --ink-4: #a4a4aa;
+            --accent: #4a4a50;
+            --accent-soft: #d5d5d9;
+            --accent-hi: #e6e6ea;
+            --accent-ink: #35353b;
+            --panel: 255, 255, 255;
+            --line: 158, 158, 162;
+            --shade: 48, 48, 54;
+            --glass: 0.5;
+            --blur: 14px;
+            --blur-sm: 8px;
+            /* ★★ 上面那批是 hex（#xxxxxx），【不能】直接塞进 rgba() ——
+               rgba(var(--accent), .92) 展开成 rgba(#4a4a50, .92)，是无效值，
+               整条声明会被浏览器静默丢弃（白底白字就是这么来的）。
+               要带透明度时用下面这批【数值形式】的伴生变量：
+                 正确：rgba(var(--accent-rgb), 0.92)
+                 错误：rgba(var(--accent), 0.92)
+            */
+            --ink-rgb: 51, 51, 54;
+            --ink-2-rgb: 85, 85, 90;
+            --ink-3-rgb: 122, 122, 128;
+            --ink-4-rgb: 164, 164, 170;
+            --accent-rgb: 74, 74, 80;
+            --accent-soft-rgb: 213, 213, 217;
+            --accent-hi-rgb: 230, 230, 234;
+            --accent-ink-rgb: 53, 53, 59;
+
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html { overflow-x: hidden; touch-action: pan-y; }
+
+        body {
+            background-color: #dadae0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--ink-2);
+            display: flex; justify-content: center; align-items: center;
+            min-height: 100dvh; overflow: hidden; overflow-x: hidden; touch-action: pan-y;
+        }
+
+        .手机主题背景容器 {
+            width: 100%; max-width: 430px; height: 100dvh; min-height: 100dvh;
+            position: relative; background-color: transparent; overflow: hidden; overflow-x: hidden;
+            box-shadow: 0 0 20px rgba(var(--shade), 0.16);
+            display: flex; flex-direction: column; touch-action: pan-y;
+            padding-top: env(safe-area-inset-top, 0px);
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+            padding-left: env(safe-area-inset-left, 0px);
+            padding-right: env(safe-area-inset-right, 0px);
+        }
+        @media (max-width: 430px) { .手机主题背景容器 { box-shadow: none; } }
+
+        .主题背景图片 {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100dvh;
+            object-fit: cover; object-position: center; display: block; z-index: 0; pointer-events: none;
+        }
+        .全局白色遮罩 {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(var(--panel), 0.45); z-index: 1; pointer-events: none;
+        }
+
+        /* ===== 顶栏 ===== */
+        .顶部固定区 {
+            position: relative; z-index: 10;
+            background: rgba(var(--panel), var(--glass));
+            -webkit-backdrop-filter: blur(var(--blur)) saturate(150%) brightness(1.06);
+            backdrop-filter: blur(var(--blur)) saturate(150%) brightness(1.06);
+            border-bottom: 1px solid rgba(var(--line), 0.28);
+            flex-shrink: 0;
+        }
+        .顶部导航栏 {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: clamp(10px, 3vw, 14px) clamp(12px, 4vw, 16px) clamp(8px, 2.4vw, 11px);
+            font-size: clamp(12px, 3.5vw, 14px); color: var(--ink-2); position: relative;
+            min-height: clamp(38px, 11vw, 46px);
+        }
+        .返回按钮 {
+            cursor: pointer; width: clamp(24px, 7vw, 28px); height: clamp(24px, 7vw, 28px);
+            display: flex; justify-content: center; align-items: center; border-radius: 50%;
+            flex-shrink: 0; -webkit-tap-highlight-color: transparent;
+        }
+        .返回按钮 svg {
+            width: clamp(18px, 5vw, 22px); height: clamp(18px, 5vw, 22px);
+            fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2;
+        }
+        /* ★ 与 5 / 7 / 8 / 9 页同款：绝对定位脱离 flex 流，真正居中 */
+        .中间标题 {
+            position: absolute; left: 0; right: 0;
+            top: clamp(10px, 3vw, 14px);
+            text-align: center;
+            font-size: clamp(14px, 4vw, 16px);
+            color: var(--ink); letter-spacing: 1px; white-space: nowrap;
+            pointer-events: none;
+        }
+        .顶栏占位 { width: clamp(24px, 7vw, 28px); flex-shrink: 0; }
+
+        /* ===== 内容区 ===== */
+        .手机界面内容 {
+            flex: 1; min-height: 0;
+            overflow-y: auto; overflow-x: hidden;
+            overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch;
+            position: relative; z-index: 2; touch-action: pan-y;
+            scrollbar-width: none; -ms-overflow-style: none;
+            padding: clamp(14px, 4vw, 20px) clamp(16px, 4.6vw, 22px) clamp(20px, 5.6vw, 26px);
+        }
+        .手机界面内容::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+        .卡片 {
+            background: rgba(var(--panel), 0.62);
+            -webkit-backdrop-filter: blur(var(--blur-sm)) saturate(140%) brightness(1.04);
+            backdrop-filter: blur(var(--blur-sm)) saturate(140%) brightness(1.04);
+            border: 1px solid rgba(var(--panel), 0.5);
+            border-radius: 14px;
+            box-shadow: 0 2px 12px rgba(var(--shade), 0.06),
+                        inset 0 1px 0 rgba(var(--panel), 0.55);
+            padding: clamp(14px, 4vw, 18px) clamp(13px, 3.8vw, 17px);
+            margin-bottom: clamp(11px, 3.2vw, 15px);
+        }
+        .卡片:last-child { margin-bottom: 0; }
+
+        .小标题 {
+            font-size: clamp(11.5px, 3.3vw, 13px);
+            color: var(--ink-3);
+            margin-bottom: clamp(7px, 2vw, 10px);
+            letter-spacing: .3px;
+        }
+        .小标题 b { color: var(--ink); font-weight: 600; }
+
+        /* 金额：大号数字 + ¥ 前缀，QQ / 微信都是这个重心 */
+        .金额行 {
+            display: flex; align-items: baseline; gap: clamp(4px, 1.2vw, 7px);
+            border-bottom: 1px solid rgba(var(--line), 0.34);
+            padding-bottom: clamp(6px, 1.8vw, 9px);
+        }
+        .金额符 { font-size: clamp(19px, 5.4vw, 23px); color: var(--ink-2); flex-shrink: 0; }
+        .金额输入 {
+            flex: 1; min-width: 0;
+            border: none; background: transparent; outline: none;
+            font-family: inherit;
+            font-size: clamp(30px, 8.6vw, 38px);
+            font-weight: 600; color: var(--ink);
+            font-variant-numeric: tabular-nums;
+            padding: 0;
+        }
+        .金额输入::placeholder { color: var(--ink-4); font-weight: 400; }
+
+        .余额 {
+            margin-top: clamp(7px, 2vw, 10px);
+            font-size: clamp(10.5px, 3vw, 12px);
+            color: var(--ink-4);
+        }
+        .余额.警告 { color: var(--accent-ink); }
+
+        .说明输入 {
+            width: 100%; box-sizing: border-box;
+            border: none; background: transparent; outline: none;
+            font-family: inherit;
+            font-size: clamp(13px, 3.6vw, 14.5px); color: var(--ink);
+            padding: 0;
+        }
+        .说明输入::placeholder { color: var(--ink-4); }
+
+        /* 单聊：转账对象（头像 + 名字），微信同款 */
+        .对象行 { display: flex; align-items: center; gap: clamp(8px, 2.4vw, 11px); }
+        .对象头像 {
+            width: clamp(30px, 8.4vw, 36px); height: clamp(30px, 8.4vw, 36px);
+            border-radius: 50%; object-fit: cover; flex-shrink: 0;
+            border: 1px solid rgba(var(--line), 0.22);
+        }
+        .对象行 .小标题 { margin-bottom: 0; }
+
+        /* ★ 群聊收款人：单选列表（微信同款 —— 群里转账是【转给某个人】，不是 AA） */
+        .收款人列表 {
+            margin-top: clamp(8px, 2.2vw, 11px);
+            padding-top: clamp(8px, 2.2vw, 11px);
+            border-top: 1px solid rgba(var(--line), 0.18);
+            display: flex; flex-direction: column; gap: clamp(2px, 0.8vw, 4px);
+        }
+        .收款人行 {
+            display: flex; align-items: center; gap: clamp(8px, 2.4vw, 11px);
+            width: 100%; padding: clamp(6px, 1.8vw, 9px) clamp(4px, 1.2vw, 7px);
+            border: none; border-radius: 10px; background: transparent;
+            font-family: inherit; text-align: left;
+            cursor: pointer; -webkit-tap-highlight-color: transparent;
+        }
+        .收款人行:active { background: rgba(var(--line), 0.14); }
+        .收款人行.选中 { background: rgba(var(--accent-rgb), 0.08); }
+        .收款人圈 {
+            flex-shrink: 0;
+            width: clamp(17px, 4.8vw, 20px); height: clamp(17px, 4.8vw, 20px);
+            border-radius: 50%; border: 1.5px solid rgba(var(--line), 0.55);
+            display: flex; align-items: center; justify-content: center;
+        }
+        .收款人行.选中 .收款人圈 {
+            background: rgba(var(--accent-rgb), 0.92);
+            border-color: rgba(var(--accent-rgb), 0.92);
+        }
+        .收款人圈 svg {
+            width: 62%; height: 62%; fill: none; stroke: #fff; stroke-width: 2.6;
+            stroke-linecap: round; stroke-linejoin: round; opacity: 0;
+        }
+        .收款人行.选中 .收款人圈 svg { opacity: 1; }
+        .收款人头像 {
+            width: clamp(26px, 7.4vw, 31px); height: clamp(26px, 7.4vw, 31px);
+            border-radius: 50%; object-fit: cover; flex-shrink: 0;
+            border: 1px solid rgba(var(--line), 0.22);
+        }
+        .收款人名 {
+            font-size: clamp(12.5px, 3.6vw, 14px); color: var(--ink);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .上限注 { font-size: clamp(10px, 2.9vw, 11.5px); color: var(--ink-4); font-weight: 400; }
+
+
+        /* ===== 主按钮 =====
+           ★ 内联在内容流里，紧跟【说明框】下方 —— 不再固定在屏幕底部。
+             （需求：确认转账 / 塞钱进红包 按钮向上移动，放在备注说明框下方） */
+        .底部操作区 {
+            position: relative; z-index: 10; flex-shrink: 0;
+            margin: clamp(14px, 4vw, 20px) 0 clamp(8px, 2.4vw, 12px);
+            padding: 0;
+        }
+        .主按钮 {
+            width: 100%;
+            height: clamp(42px, 12vw, 49px);
+            border: 1px solid var(--accent); border-radius: 14px;
+            background: var(--accent); color: #fff;
+            font-family: inherit; font-size: clamp(14px, 4vw, 15.5px); font-weight: 600;
+            letter-spacing: .5px;
+            cursor: pointer; -webkit-tap-highlight-color: transparent;
+            transition: background .16s, opacity .16s;
+        }
+        .主按钮:active { background: var(--accent-ink); }
+        .主按钮:disabled { opacity: .38; cursor: default; }
+
+        /* ===== Toast ===== */
+        .toast {
+            position: absolute; left: 50%; bottom: clamp(80px, 22vw, 108px);
+            transform: translateX(-50%) translateY(8px);
+            background: rgba(var(--shade), 0.82); color: #fff;
+            padding: clamp(7px, 2vw, 10px) clamp(13px, 3.8vw, 17px);
+            border-radius: 999px; font-size: clamp(11.5px, 3.3vw, 13px);
+            z-index: 9999; opacity: 0; pointer-events: none; white-space: nowrap;
+            max-width: 86vw; overflow: hidden; text-overflow: ellipsis;
+            transition: opacity .2s, transform .2s;
+        }
+        .toast.显示 { opacity: 1; transform: translateX(-50%) translateY(0); }
+    </style>
+</head>
+<body>
+    <div class="手机主题背景容器">
+        <img class="主题背景图片" src="2【图片】/默认主题背景.png" alt="">
+        <div class="全局白色遮罩"></div>
+
+        <div class="顶部固定区">
+            <div class="顶部导航栏">
+                <div class="返回按钮" id="返回按钮" role="button" aria-label="返回">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+                </div>
+                <div class="中间标题" id="页面标题">转账</div>
+                <span class="顶栏占位"></span>
+            </div>
+        </div>
+
+        <div class="手机界面内容">
+            <!-- 单聊：转账给对方（微信同款：头像 + 「转账给 xxx」） -->
+            <div class="卡片" id="单聊卡">
+                <div class="对象行">
+                    <img class="对象头像" id="对象头像" src="2【图片】/圆形头像1.png" alt="">
+                    <span class="小标题">转账给 <b id="对象名">对方</b></span>
+                </div>
+                <div class="金额行">
+                    <span class="金额符">¥</span>
+                    <input class="金额输入" id="金额输入" type="text" inputmode="decimal"
+                           placeholder="0.00" autocomplete="off">
+                </div>
+                <!-- 群聊：选择收款人（微信同款：转给群里某一位，不是 AA 收款） -->
+                <div class="收款人列表" id="收款人列表" style="display:none;"></div>
+            </div>
+
+            <div class="卡片" id="说明卡">
+                <div class="小标题">添加转账说明</div>
+                <input class="说明输入" id="说明输入" type="text" placeholder="选填，20 字以内"
+                       maxlength="20" autocomplete="off">
+            </div>
+
+            <!-- ★ 按钮内联在说明框下方（不再固定在屏幕底） -->
+            <div class="底部操作区">
+                <button class="主按钮" id="确认键" type="button" disabled>确认转账</button>
+            </div>
+        </div>
+
+        <div class="toast" id="toast"></div>
+    </div>
+
+    <script>
+    (function () {
+        'use strict';
+
+        /* ============================================================
+         * 0. 通用
+         * ============================================================ */
+        const 读 = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+        const 写 = (k, v) => { try { localStorage.setItem(k, String(v)); } catch (e) {} };
+
+        let toast计时 = null;
+        function 提示(文) {
+            const el = document.getElementById('toast');
+            if (!el) return;
+            el.textContent = 文;
+            el.classList.add('显示');
+            clearTimeout(toast计时);
+            toast计时 = setTimeout(() => el.classList.remove('显示'), 1800);
+        }
+
+        /* ============================================================
+         * 1. 参数：id / sid / type / name / back
+         * ============================================================ */
+        const 参数 = new URLSearchParams(location.search);
+        const 当前ID = 参数.get('id') || '';
+        const 存档ID = 参数.get('sid') || 当前ID || 'c_unknown';
+        const 是群聊 = (参数.get('type') || '').toLowerCase() === 'group';
+        const 昵称 = 参数.get('name') || '对方';
+        const 回哪 = 参数.get('back') || ('7_liaotian.html?id=' + encodeURIComponent(当前ID));
+
+        const 索引 = (() => { try { const v = JSON.parse(读('联系人索引') || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } })();
+
+        /* ★★ 群人数读「群聊列表」的真实成员 —— 不能再用「联系人索引里除自己外的所有人」：
+             群【不在】联系人索引里（g_ 开头的 id 在索引中查不到），那样算出来的是全部联系人数，
+             跟实际群成员数对不上，红包个数就会算错。 */
+        function 取群() {
+            if (!是群聊 || !存档ID) return null;
+            try {
+                const 表 = JSON.parse(读('群聊列表') || '[]');
+                if (!Array.isArray(表)) return null;
+                return 表.find(g => g && String(g.id) === String(存档ID)) || null;
+            } catch (e) { return null; }
+        }
+        const 当前群 = 取群();
+
+        /* ★ 转账【不限制可用金额】：没有余额概念，也不做余额校验 */
+        const 上限 = 20000;
+
+        document.getElementById('对象名').textContent = 昵称;
+        /* ★ 群聊也是「转账」（转给某位群成员），不再是「AA 收款」 */
+        document.getElementById('页面标题').textContent = '转账';
+        document.title = '转账';
+
+        /* ============================================================
+         * 2. 单聊 / 群聊 切换
+         * ============================================================ */
+        const 单聊卡 = document.getElementById('单聊卡');
+        const 说明卡 = document.getElementById('说明卡');
+        const 确认键 = document.getElementById('确认键');
+
+        const 金额输入 = document.getElementById('金额输入');
+        const 说明输入 = document.getElementById('说明输入');
+
+        /* ★★ 群聊：收起 AA 卡，改用「选收款人 + 单聊卡」（微信同款）。
+             群里的转账是【转给某一个人】，不是大家分摊。 */
+        let 收款人名 = '';      // 群聊下当前选中的成员
+
+        if (是群聊) {
+            单聊卡.style.display = '';
+            说明卡.style.display = '';
+            确认键.textContent = '确认转账';
+
+            /* 收款人列表：真实群成员；取不到时回退到联系人索引（不含自己） */
+            const 成员表 = (当前群 && Array.isArray(当前群.成员) && 当前群.成员.length)
+                ? 当前群.成员.map(m => ({
+                    id: String((m && m.id) || ''),
+                    名: String((m && m.名) || '').trim() || '未命名',
+                    头像: String((m && m.头像) || '') || '2【图片】/圆形头像1.png',
+                }))
+                : 索引.filter(i => i && i.id && i.id !== 存档ID)
+                     .map(i => ({
+                        id: String(i.id),
+                        名: String(i.备注 || i.名称 || '').trim() || '未命名',
+                        头像: String(i.头像 || '') || '2【图片】/圆形头像1.png',
+                     }));
+
+            const 列 = document.getElementById('收款人列表');
+            列.style.display = '';
+            列.innerHTML = '';
+
+            if (!成员表.length) {
+                const 空 = document.createElement('div');
+                空.className = '提示文';
+                空.textContent = '群里还没有其他成员';
+                列.appendChild(空);
+                确认键.disabled = true;
+            }
+
+            const 勾 = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+                + '<polyline points="4.5 12.5 9.5 17.5 19.5 7"></polyline></svg>';
+
+            成员表.forEach((人, i) => {
+                const 行 = document.createElement('button');
+                行.className = '收款人行' + (i === 0 ? ' 选中' : '');
+                行.type = 'button';
+                行.dataset.收款人 = 人.名;
+                行.innerHTML = '<span class="收款人圈">' + 勾 + '</span>'
+                    + '<img class="收款人头像" alt="">'
+                    + '<span class="收款人名"></span>';
+                const 图 = 行.querySelector('.收款人头像');
+                图.onerror = () => { 图.onerror = null; 图.src = '2【图片】/圆形头像1.png'; };
+                图.src = 人.头像;
+                行.querySelector('.收款人名').textContent = 人.名;
+                行.addEventListener('click', () => {
+                    Array.from(列.querySelectorAll('.收款人行'))
+                        .forEach(b => b.classList.remove('选中'));
+                    行.classList.add('选中');
+                    选收款人(人);
+                });
+                列.appendChild(行);
+                if (i === 0) 选收款人(人);
+            });
+        } else {
+            /* 单聊：显示对方头像（索引里查得到就用，查不到留占位图） */
+            const 命中 = 索引.find(i => i && i.id === 存档ID);
+            const 头像 = (命中 && 命中.头像)
+                || ((索引.find(i => i && i.名称 === 昵称) || {}).头像)
+                || '2【图片】/圆形头像1.png';
+            const 图 = document.getElementById('对象头像');
+            图.onerror = () => { 图.onerror = null; 图.src = '2【图片】/圆形头像1.png'; };
+            图.src = 头像;
+        }
+
+        /* ============================================================
+         * 3. 金额：只留数字与一个小数点，最多两位
+         * ============================================================ */
+        function 洗金额(串) {
+            let s = String(串 || '').replace(/[^\d.]/g, '');
+            const 首点 = s.indexOf('.');
+            if (首点 >= 0) s = s.slice(0, 首点 + 1) + s.slice(首点 + 1).replace(/\./g, '');
+            if (s.indexOf('.') >= 0) {
+                const 段 = s.split('.');
+                s = 段[0] + '.' + 段[1].slice(0, 2);
+            }
+            return s;
+        }
+        function 取金额(入) {
+            const 值 = parseFloat(洗金额(入.value));
+            return (isFinite(值) && 值 > 0) ? +值.toFixed(2) : 0;
+        }
+        function 钱(数) {
+            const v = (Math.round(数 * 100) / 100).toFixed(2);
+            return v.replace(/\.00$/, '');
+        }
+        /** 千分位（金额提示用） */
+        function 千分位(数) {
+            const 段 = String(数).split('.');
+            段[0] = 段[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+            return 段.join('.');
+        }
+
+        /** 选中某位群成员作为收款人：同步对象行的名字与头像 */
+        function 选收款人(人) {
+            收款人名 = 人.名;
+            document.getElementById('对象名').textContent = 人.名;
+            const 图 = document.getElementById('对象头像');
+            图.onerror = () => { 图.onerror = null; 图.src = '2【图片】/圆形头像1.png'; };
+            图.src = 人.头像;
+        }
+        window.选收款人 = 选收款人;
+        window.取收款人 = () => 收款人名;
+
+
+        function 刷新() {
+            /* ★ 群聊也用单聊那套金额输入（转给某个人，不是分摊）
+                 ★ 不限制可用金额：不显示余额、不做余额校验 */
+            const 额 = 取金额(金额输入);
+            确认键.disabled = !额;
+        }
+
+        金额输入.addEventListener('input', () => { 金额输入.value = 洗金额(金额输入.value); 刷新(); });
+
+        /* ============================================================
+         * 4. 确认：写「待发消息_<sid>」→ 回 7 页（落地由 7 页做）
+         * ============================================================ */
+        function 提交() {
+            /* ★★ 群聊与单聊走【同一套】：金额 + 说明，群聊多带一个「对象」（收款人）。
+                 不再是 AA 收款 —— 群里转账是转给某一位成员（微信同款）。 */
+            if (是群聊 && !收款人名) { 提示('请选择收款人'); return; }
+
+            const 额 = 取金额(金额输入);
+            if (!额) { 提示('请输入转账金额'); return; }
+            if (额 > 上限) { 提示('单笔不能超过 ¥' + 千分位(上限)); return; }
+
+            写('待发消息_' + 存档ID, JSON.stringify({
+                类型: '转账',
+                文: '[转账]',
+                卡: {
+                    种类: '转账', 金额: 额,
+                    说明: 说明输入.value.trim(),
+                    对象: 收款人名,          /* 群聊有值 → 气泡显示「转账给 XXX」 */
+                },
+                提示: '已转账 ¥' + 钱(额) + (收款人名 ? ' 给 ' + 收款人名 : ''),
+            }));
+            回七页();
+        }
+
+        function 回七页() {
+            try { window.最后跳转 = 回哪; } catch (e) {}
+            location.href = 回哪;
+        }
+        window.回七页 = 回七页;
+        window.取返回页 = () => 回哪;      // 与 9 / 10 / 11 页同款观察口
+
+        确认键.addEventListener('click', 提交);
+        document.getElementById('返回按钮').addEventListener('click', 回七页);
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') 回七页();
+        });
+
+        刷新();
+    })();
+    </script>
+
+<script>
+/* ===== 主题背景：读全局设置（由 9_zhutishezhi.html 写入，全站共用）=====
+   ① 自定义：直接用 dataURL
+   ② 内置：按索引取 2【图片】 下的主题（0 = 默认主题背景，1~5 = 背景1~背景5）
+      扩展名自动探测 png → jpg → jpeg → webp，素材不是 png 也显示得出来
+   ③ 没设置 / 索引为 0：保持页面里写死的默认图，不动 */
+(function () {
+    var 图 = document.querySelector('.主题背景图片');
+    if (!图) return;
+    var 存 = null;
+    try { 存 = JSON.parse(localStorage.getItem('主题背景') || 'null'); } catch (e) {}
+    if (!存) return;
+
+    if (存.源 === '自定义' && 存.数据) { 图.src = 存.数据; return; }
+
+    if (存.源 === '默认' && typeof 存.索引 === 'number' && 存.索引 > 0) {
+        var 名 = '背景' + 存.索引;
+        var 候选 = ['png', 'jpg', 'jpeg', 'webp'], 序 = 0;
+        图.addEventListener('error', function () {
+            if (序 < 候选.length) 图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+        });
+        图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+    }
+})();
+</script>
+    <!-- ===== 全局音乐：跨页续播（内联版）=====
+         与 4 页播放器共用 localStorage「音乐播放状态」；
+         页面里存在 #音乐播放器（4 页）时完全让位，避免两个 audio 同时出声。
+    ★ 这段是内联副本，改请改 全局音乐.js 后跑 python3 同步全局音乐.py -->
+    <script id="全局音乐">
+/* =============================================================================
+ * 全局音乐.js —— 跨页续播（4 页开始播，切到任何界面都不中断）
+ *
+ * 【为什么需要它】
+ *   4_tongxun 有自己的完整 UI 播放器，但 HTML 页面之间是真跳转：
+ *   一离开 4 页，整个 JS 上下文连同 <audio> 一起被销毁，音乐就断了。
+ *   本脚本在每个页面挂一个「无界面的续播器」：进来先读存档，
+ *   如果上次是在播，就重建 audio、跳回原秒数、接着播。
+ *
+ * 【它不是什么】
+ *   不做 UI、不做播放列表 —— 那些是 4 页播放器的职责。
+ *   这里只负责「让声音不断」，回到 4 页时完整播放器会自然接手。
+ *
+ * 【契约（改这里前务必看）】
+ *   ① 存档键 '音乐播放状态'，格式必须与 4 页 保存状态() 完全一致：
+ *        { id, 名, 类型:'默认'|'上传', 时间:秒, 播放中:bool }
+ *      —— 两边都写、都读同一个键，才能无缝交接。
+ *   ② ★ 让位规则：页面里若存在 #音乐播放器（4 页的），本脚本【完全不启动】。
+ *      否则两个 audio 会同时出声。这是唯一的冲突防线，别删。
+ *   ③ 上传曲目在 IndexedDB：库名 '音乐库' / 表名 '音频'（与 4 页同名同结构）。
+ *
+ * 【让位 API（其它页面调用）】
+ *   window.全局音频.暂停('语音消息') / .恢复('语音消息')
+ *   window.全局音频.暂停('语音通话') / .恢复('语音通话')
+ *   7 页播语音条、14 页通话时分别调用，避免两路声音叠在一起。
+ *   ★ 用【原因集合】而非布尔：语音与通话可能重叠，布尔会在语音播完时
+ *     把仍在通话中的音乐放出来。全部原因解除才恢复。
+ *   ★ 会记住「占用前是否在播」，本来没放音乐就不会凭空启动。
+ *
+ * 【自动播放限制】
+ *   浏览器会拦「没有用户手势的自动播放」。被拦时不报错、不打断，
+ *   改为监听页面上第一次 pointerdown / touchstart 补播一次
+ *   —— 与 4 页 尝试续播() 同一个套路。
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    const 状态键 = '音乐播放状态';
+    const 目录候选 = ['1【音乐】/', '../1【音乐】/'];   // 与 4 页一致：html 挪进子文件夹时自动回退
+    const 库名 = '音乐库';
+    const 表名 = '音频';
+
+    /* ---------------------------------------------------------------
+     * IndexedDB：只为拿上传曲目的 blob，读不到就 null（调用方兜底）
+     * ------------------------------------------------------------- */
+    function 打开库() {
+        return new Promise((完成, 失败) => {
+            if (typeof indexedDB === 'undefined') return 失败(new Error('无 IndexedDB'));
+            let 请求;
+            try { 请求 = indexedDB.open(库名, 1); } catch (e) { return 失败(e); }
+            请求.onupgradeneeded = () => {
+                const db = 请求.result;
+                if (!db.objectStoreNames.contains(表名)) db.createObjectStore(表名, { keyPath: 'id' });
+            };
+            请求.onsuccess = () => 完成(请求.result);
+            请求.onerror = () => 失败(请求.error || new Error('打开失败'));
+        });
+    }
+
+    function 读一条(id) {
+        return 打开库().then(db => new Promise((完成, 失败) => {
+            const 事务 = db.transaction(表名, 'readonly');
+            const 请求 = 事务.objectStore(表名).get(id);
+            请求.onsuccess = () => 完成(请求.result || null);
+            请求.onerror = () => 失败(请求.error);
+        })).catch(() => null);
+    }
+
+    /* ---------------------------------------------------------------
+     * 存档读写
+     * ------------------------------------------------------------- */
+    function 读状态() {
+        try { return JSON.parse(localStorage.getItem(状态键) || 'null'); } catch (e) { return null; }
+    }
+
+    function 写状态(存) {
+        try { localStorage.setItem(状态键, JSON.stringify(存)); } catch (e) {}
+    }
+
+    /* ---------------------------------------------------------------
+     * 主体
+     * ------------------------------------------------------------- */
+    const 元素id = '全局音乐播放器';
+
+    /* =========================================================================
+     * ★ 占用管理：语音消息 / 语音通话 出声时，背景音乐让位
+     *
+     *   为什么用 Set 而不是布尔：两种占用可能重叠（比如播着语音条的同时来电话）。
+     *   布尔会在「语音播完恢复」时把仍在通话中的音乐也放出来。
+     *   记成「原因集合」，全部解除才恢复 —— 这是这类让位逻辑的正确写法。
+     *
+     *   另外要记住【占用前是否在播】：如果本来就没放音乐，
+     *   语音播完不该把音乐凭空启动。
+     * ======================================================================= */
+    const 占用 = new Set();
+    let 占用前在播 = false;
+    /* ★ 声明在 IIFE 顶层而不是 启动() 内：页尾探针 __全局音乐.补播中() 要访问它，
+         放在 启动() 里的话外层作用域取不到（TDZ / 未定义）。 */
+    let 补播中 = false;
+
+    /** 4 页让位时，操作目标是它自己的 #音乐播放器；否则是本脚本建的那个 */
+    function 取音频() {
+        return document.getElementById('音乐播放器') || document.getElementById(元素id);
+    }
+
+    const 全局音频 = {
+        /** 暂停背景音乐（可重入；同一原因重复调用无害） */
+        暂停(原因) {
+            const 键 = 原因 || '未命名';
+            if (占用.size === 0) {
+                const a = 取音频();
+                占用前在播 = !!a && !a.paused;
+            }
+            占用.add(键);
+            const a = 取音频();
+            if (a && !a.paused) { try { a.pause(); } catch (e) {} }
+        },
+
+        /** 解除某个占用；全部解除且占用前在播 → 恢复播放 */
+        恢复(原因) {
+            const 键 = 原因 || '未命名';
+            if (!占用.has(键)) return;
+            占用.delete(键);
+            if (占用.size > 0) return;              // 还有别的占用（比如仍在通话）
+            if (!占用前在播) return;                 // 本来就没在播 → 不凭空启动
+            const a = 取音频();
+            if (a && a.paused) {
+                const 试 = a.play();
+                if (试 && typeof 试.catch === 'function') 试.catch(() => {});
+            }
+        },
+
+        /** 强制清掉所有占用（异常路径兜底用） */
+        清除() { 占用.clear(); },
+
+        占用中() { return 占用.size > 0; },
+        占用表() { return Array.from(占用); },
+        是否在播() { const a = 取音频(); return !!a && !a.paused; },
+    };
+    /* ★ 无论让不让位都挂上：让位时它操作的是 4 页自己的播放器，
+       调用方（语音条 / 通话）不必关心自己在哪个页面。 */
+    window.全局音频 = 全局音频;
+
+    function 启动() {
+        /* ★★ 让位：4 页有完整播放器（#音乐播放器），这里绝不能再建第二个 audio。
+              注意 7 页那个是 #语音播放器（点语音消息用的），与本脚本无关，
+              各播各的，所以【只】认 #音乐播放器 这一个 id。 */
+        if (document.getElementById('音乐播放器')) return;
+        /* 防重：脚本万一被引了两次，也只建一个 audio */
+        if (document.getElementById(元素id)) return;
+
+        const 存 = 读状态();
+        // 没在播（或压根没播过）→ 安静退出，不建元素、不占资源
+        if (!存 || !存.播放中 || !存.名) return;
+
+        const 音频 = document.createElement('audio');
+        音频.id = 元素id;
+        音频.dataset.全局音乐 = '1';        // 便于排查 / 测试定位
+        音频.preload = 'metadata';
+        document.body.appendChild(音频);
+
+        const 目标 = Math.max(0, Number(存.时间) || 0);
+        let 已定位 = false;      // loadedmetadata 只处理一次（切目录会重复触发）
+        let 目录序 = 0;
+        let 上传链接 = '';
+
+        /* 跳回上次的秒数再播。★ 先 seek 后 play：
+           否则会从 0 开始，听感上像换了一首。 */
+        音频.addEventListener('loadedmetadata', () => {
+            if (已定位) return;
+            已定位 = true;
+            const 长 = isFinite(音频.duration) ? 音频.duration : 0;
+            try {
+                音频.currentTime = 长 > 0
+                    ? Math.min(目标, Math.max(0, 长 - 0.3))
+                    : 目标;
+            } catch (e) {}
+            续播();
+        });
+
+        /* 目录逐个试：与 4 页 载入当前目录() 同款（文件缺失 / 解码失败都能兜住） */
+        音频.addEventListener('error', () => {
+            if (目录序 < 目录候选.length) {
+                音频.src = encodeURI(目录候选[目录序++] + 存.名);
+            }
+        });
+
+        /* 播完了：不自动切歌（这里没有播放列表），停住并把状态改成「没在播」，
+           免得下一次进任意页面又从头播一遍。 */
+        音频.addEventListener('ended', () => {
+            写状态({ id: 存.id, 名: 存.名, 类型: 存.类型, 时间: 0, 播放中: false });
+        });
+
+        /* ---- 进度回写：下一页（或回到 4 页）要靠它续上 ---- */
+        function 存一次(播放中) {
+            写状态({
+                id: 存.id, 名: 存.名, 类型: 存.类型,
+                时间: 音频.currentTime || 0,
+                /* ★ 同 4 页那个坑：只认真正的布尔。pagehide / beforeunload
+                     的监听器会把 Event 对象当第一个参数传进来，
+                     `播放中 === undefined` 拦不住它 → `!!Event` = true。 */
+                播放中: typeof 播放中 !== 'boolean' ? !音频.paused : 播放中,
+            });
+        }
+        // 播着的时候每秒存一次，中途崩溃 / 强杀也不会丢太多
+        setInterval(() => { if (!音频.paused) 存一次(true); }, 1000);
+        // 离开页面再存一次：跳转、切后台、关闭三种情况都覆盖
+        const 存一次同步 = () => 存一次();
+        window.addEventListener('pagehide', 存一次同步);
+        window.addEventListener('beforeunload', 存一次同步);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') 存一次同步();
+        });
+
+        /* ------------------------------------------------------------
+         * 补播：浏览器会拦「没有用户手势」的自动播放，这是硬限制，绕不过去。
+         *   策略：
+         *     ① 直接播；
+         *     ② 被拒 → 【持续】监听用户交互，直到真的播起来才撤监听；
+         *     ③ 期间挂一个可见小条，告诉用户「点一下继续」。
+         *   ★★ 关键：不能用 once:true。那一次点击可能仍被拒（或音频还没
+         *      ready），失败后就再也没机会了 —— 表现正是「切过去没声音」。
+         *      必须【成功才停】，这是这段里最要紧的一句。
+         * ---------------------------------------------------------- */
+        const 事件名 = ['pointerdown', 'touchstart', 'click', 'keydown'];
+
+        function 撤补播() {
+            if (!补播中) return;
+            补播中 = false;
+            事件名.forEach(n => document.removeEventListener(n, 试补播, true));
+            document.removeEventListener('visibilitychange', 见可见);
+            收提示();
+        }
+
+        function 见可见() {
+            if (document.visibilityState === 'visible') 试补播();
+        }
+
+        function 试补播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();                     // 老浏览器无 Promise：当成功处理
+        }
+
+        /** 被拦 → 挂持续监听 + 显示提示条 */
+        function 展提示() {
+            if (!补播中) {
+                补播中 = true;
+                /* ★ 捕获阶段：冒泡阶段可能被页面自己的 stopPropagation 吃掉 */
+                事件名.forEach(n => document.addEventListener(n, 试补播, true));
+                document.addEventListener('visibilitychange', 见可见);
+            }
+            亮提示();
+        }
+
+        /* ---- 提示条：自建，不依赖各页自己的 toast 实现（各页不统一）---- */
+        let 提示元素 = null;
+        function 亮提示() {
+            if (提示元素) return;
+            const 条 = document.createElement('div');
+            条.id = '全局音乐提示';
+            条.textContent = '♪ 音乐已就绪，点一下继续播放';
+            // 样式全内联 + !important：各页 CSS 互不统一，不这样会被盖掉 / 变形
+            条.setAttribute('style', [
+                'position:fixed', 'left:50%', 'bottom:16px', 'transform:translateX(-50%)',
+                'z-index:99999', 'padding:8px 14px', 'border-radius:999px',
+                'background:rgba(28,28,32,0.86)', 'color:#fff', 'font-size:12px',
+                'letter-spacing:.3px', 'pointer-events:none',
+                'box-shadow:0 4px 16px rgba(0,0,0,.2)',
+                'transition:opacity .25s', 'opacity:0',
+                'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif',
+            ].join('!important;') + '!important');
+            document.body.appendChild(条);
+            提示元素 = 条;
+            setTimeout(() => { if (提示元素) 提示元素.style.opacity = '1'; }, 20);
+            setTimeout(收提示, 8000);           // 8 秒后自动收，别一直杵着
+        }
+        function 收提示() {
+            if (!提示元素) return;
+            const 条 = 提示元素;
+            提示元素 = null;
+            条.style.opacity = '0';
+            setTimeout(() => { if (条.parentNode) 条.parentNode.removeChild(条); }, 300);
+        }
+
+        function 续播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { 展提示(); return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();
+        }
+
+        // 播起来了就收掉提示（例如用户从别处触发了播放）
+        音频.addEventListener('play', 撤补播);
+
+        /* ---- 载入：上传曲目走 blob URL，其余按目录拼路径 ---- */
+        function 载入默认() {
+            目录序 = 0;
+            音频.src = encodeURI(目录候选[目录序++] + 存.名);
+        }
+
+        if (存.类型 === '上传' && 存.id) {
+            读一条(存.id).then(记录 => {
+                if (记录 && 记录.数据) {
+                    try {
+                        上传链接 = URL.createObjectURL(记录.数据);
+                        音频.src = 上传链接;
+                        return;
+                    } catch (e) {}
+                }
+                载入默认();          // 读不到（库被清了）→ 退回按名字找文件
+            });
+        } else {
+            载入默认();
+        }
+    }
+
+    /* DOM 就绪再跑：4 页的 #音乐播放器 也在 body 里，早了会误判成「没有」
+       → 两个 audio 同时出声。 */
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    // 测试 / 调试用：暴露一个只读探针，验证脚本确实起来了
+    window.__全局音乐 = {
+        键: 状态键,
+        元素id: 元素id,
+        让位条件: () => !!document.getElementById('音乐播放器'),
+        占用: 全局音频.占用表,
+        补播中: () => 补播中,
+    };
+})();
+    </script>
+    <script id="软键盘适配">
+/* =============================================================================
+ * 软键盘适配.js —— 让输入框在手机输入法弹出时始终可见
+ *
+ * 【要解决什么】
+ *   全站每个页面都是「100dvh 的固定容器 + 中间滚动区 + 底部固定区」的结构：
+ *       .手机主题背景容器 { height: 100dvh; overflow: hidden; display:flex; column }
+ *         ├── .顶部固定区      (flex-shrink: 0)
+ *         ├── .手机界面内容    (flex: 1; overflow-y: auto)  ← 唯一滚动区
+ *         └── .底部输入区      (flex-shrink: 0)
+ *   容器高度被 100dvh 硬锁死，所以输入法一弹出：
+ *     · iOS Safari：layout viewport 不变，visual viewport 被键盘吃掉一块，
+ *       容器高度纹丝不动 → 底部输入区整个被键盘盖住。
+ *     · Android Chrome（resize 模式）：innerHeight 会变小，dvh 跟着变，
+ *       容器自动变矮 → 但只在部分浏览器成立，换一家就打回原形。
+ *   同一套代码在两家表现不一样，正是这次要抹平的东西。
+ *
+ * 【核心思路：只信 visualViewport】
+ *   键盘高度 = 基准布局高 − visualViewport.height − visualViewport.offsetTop
+ *   然后把容器高度直接设成 visualViewport.height，并整体平移 offsetTop。
+ *   —— 不猜机型、不猜浏览器，只认「当前真正能看见的这块矩形」，
+ *      所以 iOS / Android / 各家输入法走的都是同一条代码路径。
+ *
+ *   ★ 基准布局高不是实时的 window.innerHeight —— 这是最容易写错的一处。
+ *     Android 键盘弹出时 innerHeight 本身就会变小，拿实时 innerHeight 去减
+ *     visualViewport.height 会得到 0，等于永远检测不到键盘（典型的「安卓没效果」）。
+ *     基准只在「确认键盘收起」时更新，弹出期间冻结。
+ *
+ * 【两件事一起做，缺一个都会漏】
+ *   ① 容器自适应：解决「底部常驻输入区被盖」（7 页的 .底部输入区）
+ *   ② 焦点滚入可视：解决「滚动区里的输入框被盖」（2 / 11 / 19~22 页的表单）
+ *
+ * 【四条硬约束（需求点，改动时别破）】
+ *   ① 不抖动：高度变化 ≤ 2px 不写样式；所有写入合并进一帧 rAF；
+ *              键盘判定阈值 80px，避开地址栏收起、工具栏隐藏这类假信号。
+ *   ② 不丢焦点：全程不 blur、不重建 DOM、不动 tabindex、不改 DOM 顺序。
+ *   ③ 不整页滚：绝不用 window.scrollTo 做补偿 —— 那会让 iOS 整个 layout
+ *      viewport 上移，顶部被切掉且松手后弹不回来。只改容器高度与
+ *      「最近的可滚动祖先」的 scrollTop。
+ *   ④ 不硬编码机型：没有 User-Agent 判断，没有 iOS / Android 分支。
+ *
+ * 【降级】
+ *   没有 visualViewport（老浏览器）→ 退回 window.resize + innerHeight 比对。
+ *   再不行 → 什么都不做，恢复成页面原本的样子（不会更糟）。
+ *
+ * 【对外 API（业务与测试用）】
+ *   window.软键盘.是否弹出()   → bool
+ *   window.软键盘.键盘高度()   → 像素
+ *   window.软键盘.校准()       → 立刻重算一次（比如弹窗关闭后）
+ *   window.软键盘.让位(px)     → 声明额外的底部占用（如自定义输入条），
+ *                                容器会再让出这么多高度
+ *   window.软键盘._喂(...)     → 测试用：直接喂一个可视区矩形
+ *
+ * ★★ 本文件是唯一源。改完跑：python3 同步软键盘.py
+ *     （与 全局音乐.js / 音频助手.js 同一套内联同步机制）
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    /* ------------------------------------------------------------------
+     * 常量
+     * ---------------------------------------------------------------- */
+    const 容器类名 = '手机主题背景容器';
+    const 弹出阈值 = 80;      // 键盘高度超过它才认定「键盘弹出了」
+    const 变化阈值 = 2;       // 高度变化不超过它就不写样式，省掉无意义的重排
+    const 底部余量 = 14;      // 焦点元素与可视区底部之间留的呼吸位
+    const 顶部余量 = 8;
+    const 类名键已弹 = '软键盘已弹出';
+    const 样式id = '软键盘适配样式';
+
+    const vv = (typeof window.visualViewport === 'object' && window.visualViewport)
+        ? window.visualViewport : null;
+
+    /* ------------------------------------------------------------------
+     * 状态
+     * ---------------------------------------------------------------- */
+    let 容器 = null;
+    let 基准高 = 0;           // 「键盘收起时」的布局高度，弹出期间冻结
+    let 已弹出 = false;
+    let 上次可视高 = 0;
+    let 上次偏移 = 0;
+    let 帧 = 0;               // rAF 句柄，用于合并
+    let 额外让位 = 0;         // window.软键盘.让位() 设进来的额外高度
+    let 焦点 = null;          // 最近一次聚焦的输入元素
+
+    /* ------------------------------------------------------------------
+     * 小工具
+     * ---------------------------------------------------------------- */
+    function 是输入框(el) {
+        if (!el || !el.tagName) return false;
+        const 标签 = el.tagName.toLowerCase();
+        return 标签 === 'input' || 标签 === 'textarea'
+            || (标签 === 'div' && el.isContentEditable === true);
+    }
+
+    /** 找容器：优先类名（全站统一），退化到 body 的唯一直接子元素 */
+    function 找容器() {
+        if (容器 && 容器.isConnected) return 容器;
+        容器 = document.querySelector('.' + 容器类名) || null;
+        return 容器;
+    }
+
+    function 可视顶() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+    function 可视底() {
+        if (vv) return (vv.offsetTop || 0) + vv.height;
+        return (window.scrollY || 0) + window.innerHeight;
+    }
+    function 当前可视高() { return vv ? vv.height : window.innerHeight; }
+    function 当前偏移() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+
+    /* ------------------------------------------------------------------
+     * 注入样式：只在键盘弹出时生效，收起即移除，不留残余
+     * ---------------------------------------------------------------- */
+    function 装样式() {
+        if (document.getElementById(样式id)) return;
+        const 样式 = document.createElement('style');
+        样式.id = 样式id;
+        /* ★ 用 class 而不是内联 style：收起时摘掉 class 就能还原，
+             不用逐个记住页面原本的 align-items / padding 是多少。 */
+        样式.textContent =
+            'html.' + 类名键已弹 + ' body{align-items:flex-start !important;}\n' +
+            'html.' + 类名键已弹 + ' .' + 容器类名 + '{padding-bottom:0 !important;}\n';
+        (document.head || document.documentElement).appendChild(样式);
+    }
+
+    /* ------------------------------------------------------------------
+     * 核心：把容器压到「真正看得见」的那块矩形里
+     * ---------------------------------------------------------------- */
+    function 应用() {
+        const 盒 = 找容器();
+        if (!盒) return;
+
+        const 可视高 = 当前可视高();
+        const 偏移 = 当前偏移();
+
+        if (!基准高) 基准高 = window.innerHeight || 可视高;
+
+        /* ★★ 键盘高度：基准 − 可视高 − 偏移。
+              基准在弹出期间冻结，所以 Android 那种「innerHeight 自己也会缩」
+              的情况同样算得出来。 */
+        let 键盘 = 基准高 - 可视高 - 偏移;
+        if (键盘 < 0) 键盘 = 0;
+
+        const 弹出 = 键盘 > 弹出阈值;
+
+        /* 状态没变、且可视高几乎没动 → 什么都不做（防抖动的第①道闸） */
+        if (弹出 === 已弹出
+            && Math.abs(可视高 - 上次可视高) <= 变化阈值
+            && Math.abs(偏移 - 上次偏移) <= 变化阈值) {
+            if (弹出) 校准焦点();
+            return;
+        }
+
+        上次可视高 = 可视高;
+        上次偏移 = 偏移;
+        已弹出 = 弹出;
+
+        const 根 = document.documentElement;
+        const 体 = document.body;
+
+        if (弹出) {
+            装样式();
+            if (!根.classList.contains(类名键已弹)) 根.classList.add(类名键已弹);
+
+            /* 容器高度 = 真正看得见的高度（再减去业务声明的额外让位） */
+            const 目标高 = Math.max(120, 可视高 - 额外让位);
+            盒.style.height = 目标高 + 'px';
+            盒.style.minHeight = 目标高 + 'px';
+            /* 跟着 visualViewport 的偏移走（iOS 页面被上推时靠它归位） */
+            盒.style.transform = (偏移 ? 'translateY(' + 偏移 + 'px)' : '');
+
+            /* ③ 不整页滚：只在系统确实把 layout viewport 推走时温和拉回原点。
+                 阈值 4px 是为了不跟正常的 1~2px 抖动打架。 */
+            if (!vv && (window.pageYOffset || 0) > 4 && 体) {
+                const 体溢出 = window.getComputedStyle(体).overflow;
+                if (体溢出 === 'hidden' || 体溢出 === 'clip') window.scrollTo(0, 0);
+            }
+        } else {
+            /* 收起：摘 class、清掉所有内联改动，回到页面原本的样子 */
+            if (根.classList.contains(类名键已弹)) 根.classList.remove(类名键已弹);
+            盒.style.height = '';
+            盒.style.minHeight = '';
+            盒.style.transform = '';
+            /* 收起时基准可以放心更新 —— 此刻量到的就是「无键盘」的真实高度 */
+            基准高 = window.innerHeight || 可视高;
+        }
+
+        /* 容器变矮之后滚动区也变矮，焦点元素可能又落到可视区外 → 再校准一次 */
+        校准焦点();
+    }
+
+    /** 合并到下一帧，避免 resize 连发时反复读写布局 */
+    function 排一帧() {
+        if (帧) return;
+        const 跑 = window.requestAnimationFrame
+            || function (f) { return setTimeout(f, 16); };
+        帧 = 跑(function () { 帧 = 0; 应用(); });
+    }
+
+    /* ------------------------------------------------------------------
+     * ② 焦点滚入可视
+     * ---------------------------------------------------------------- */
+    /** 向上找最近一个「真的能滚」的祖先 */
+    function 找滚动祖先(el) {
+        let n = el ? el.parentElement : null;
+        while (n && n !== document.body && n !== document.documentElement) {
+            const 样式 = window.getComputedStyle(n);
+            const 可滚 = /(auto|scroll|overlay)/.test(样式.overflowY || '');
+            if (可滚 && n.scrollHeight > n.clientHeight + 1) return n;
+            n = n.parentElement;
+        }
+        return null;
+    }
+
+    /**
+     * 把焦点元素挪进可视区。
+     * ★ 只动「最近滚动祖先」的 scrollTop —— 不动 window，避免整页位移。
+     * ★ 元素本来就在可视区里时什么都不做，不会没事乱滚。
+     */
+    function 校准焦点() {
+        const el = 焦点 || document.activeElement;
+        if (!是输入框(el)) return;
+        if (!找容器()) return;
+
+        const 矩形 = el.getBoundingClientRect();
+        if (!矩形.height && !矩形.top) return;      // 还没布局完，跳过
+
+        const 下界 = 可视底() - 底部余量;
+        const 上界 = 可视顶() + 顶部余量;
+
+        let 差 = 0;
+        if (矩形.bottom > 下界) 差 = 矩形.bottom - 下界;
+        else if (矩形.top < 上界) 差 = 矩形.top - 上界;
+
+        if (Math.abs(差) <= 1) return;
+
+        const 滚动父 = 找滚动祖先(el);
+        /* 不在任何滚动区里（比如底部常驻输入区）：容器已经跟着可视区收缩了，
+           理论上不该再超出。真超了也不碰 window —— 那才是抖动的根源。 */
+        if (滚动父) 滚动父.scrollTop += 差;
+    }
+
+    /* ------------------------------------------------------------------
+     * 事件
+     * ---------------------------------------------------------------- */
+    function 起监听() {
+        /* ① visualViewport：键盘弹出 / 收起 / 页面被上推 都走这里，逐帧跟随 */
+        if (vv) {
+            vv.addEventListener('resize', 排一帧);
+            vv.addEventListener('scroll', function () {
+                /* iOS 键盘弹出时若系统把 layout viewport 推走，offsetTop 会变，
+                   这里同步一下容器位置，避免顶部被切掉。 */
+                if (已弹出) 排一帧();
+            });
+        }
+
+        /* ② 降级：没有 visualViewport 的老浏览器，靠 window.resize */
+        window.addEventListener('resize', 排一帧);
+
+        /* ③ 方向变化：横竖屏切换后基准要重测 */
+        window.addEventListener('orientationchange', function () {
+            基准高 = 0;
+            setTimeout(排一帧, 120);
+        });
+
+        /* ④ 聚焦：记下元素并立刻校准一次。
+             键盘弹出是异步动画（iOS 约 250ms），所以这里先做一次「预防性」校准，
+             随后 visualViewport.resize 每帧触发时会继续跟着校准到最终位置。 */
+        document.addEventListener('focusin', function (e) {
+            if (!是输入框(e.target)) return;
+            焦点 = e.target;
+            /* 先测一次基准：此刻键盘还没弹，量到的正是无键盘高度 */
+            if (!已弹出) 基准高 = window.innerHeight || 当前可视高();
+            setTimeout(排一帧, 30);
+        }, true);
+
+        /* ⑤ 失焦：键盘收起由 resize 兜底，这里只清记录、不主动改布局
+              —— 切到下一个输入框时 focusin 会立刻接手，不会闪。 */
+        document.addEventListener('focusout', function (e) {
+            if (焦点 === e.target) 焦点 = null;
+        }, true);
+
+        /* ⑥ 切后台回来：尺寸可能已经变了 */
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) { 基准高 = 0; 排一帧(); }
+        });
+    }
+
+    /* ------------------------------------------------------------------
+     * 启动
+     * ---------------------------------------------------------------- */
+    function 启动() {
+        找容器();
+        基准高 = window.innerHeight || 当前可视高();
+        上次可视高 = 当前可视高();
+        上次偏移 = 当前偏移();
+        起监听();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    /* ------------------------------------------------------------------
+     * 对外 API
+     * ---------------------------------------------------------------- */
+    window.软键盘 = {
+        是否弹出: function () { return 已弹出; },
+        键盘高度: function () {
+            return Math.max(0, 基准高 - 当前可视高() - 当前偏移());
+        },
+        校准: 排一帧,
+        /** 业务声明额外的底部占用（例如自定义输入条），容器再让出这么多 */
+        让位: function (px) {
+            额外让位 = Math.max(0, Number(px) || 0);
+            排一帧();
+        },
+        /**
+         * 测试用：直接喂一个「可视区矩形」，跳过真实环境探测。
+         *   _喂(可视高, 偏移, 布局高)
+         * · 有 visualViewport：改它的 height / offsetTop
+         * · 没有（降级路径）：改 window.innerHeight
+         * 两种都是测试替身走的同一条代码路径，所以断言对真机同样成立。
+         */
+        _喂: function (可视高, 偏移, 布局高) {
+            if (typeof 布局高 === 'number' && 布局高 > 0) 基准高 = 布局高;
+            上次可视高 = -999;                 // 强制通过变化阈值，保证一定重算
+            if (vv) {
+                try {
+                    vv.height = 可视高;
+                    vv.offsetTop = 偏移 || 0;
+                } catch (e) {
+                    Object.defineProperty(vv, 'height', { value: 可视高, configurable: true });
+                    Object.defineProperty(vv, 'offsetTop', { value: 偏移 || 0, configurable: true });
+                }
+            } else {
+                try { window.innerHeight = 可视高; } catch (e) {
+                    Object.defineProperty(window, 'innerHeight',
+                        { value: 可视高, configurable: true, writable: true });
+                }
+            }
+            应用();
+            return true;
+        },
+        /** 测试用：当前容器被压到的高度（内联样式里的值，未设置则空串） */
+        _容器高: function () {
+            const 盒 = 找容器();
+            return 盒 ? (盒.style.height || '') : null;
+        },
+    };
+})();
+    </script>
+</body>
+</html>

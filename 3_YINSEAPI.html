@@ -1,0 +1,1777 @@
+<!DOCTYPE html>
+<!--
+    3_YINSEAPI —— 音色配置独立界面（ID 分桶版）。
+    从 2_haoyouxinxi.html 的「音色配置」行点击跳转进入。
+    支持两种入口：
+      ① 编辑已有联系人：URL 带 ?id=<联系人id> → 读写「音色配置_<id>」
+      ② 新建联系人：URL 无 id（mode=new 或空白）→ 读写临时键，保存时由 2 页接管
+
+    数据契约（写入 localStorage）：
+      编辑模式：键「音色配置_<id>」= { 音色, 自定义ID, 音速, 语调, 语言, 性别, 已启用 }
+      新建模式：键「音色配置_临时」= 同上（2 页保存时合并到对应 id）
+      兼容旧全局键「音色配置」（兜底读取）
+
+    联动逻辑：
+      ① 进入时读对应键，回填表单；若无则用默认值。
+      ② 拨动顶部开关 → 开：校验通过后写入 已启用:true；关：写 已启用:false。
+      ③ 开关开启时会同步保存当前表单参数（音色/音速/语调/语言/性别/自定义 ID）。
+      ④ 返回：编辑模式 → 2 页带 id；新建模式 → 2 页带 mode=new
+
+    ★★ 与 21_yinpinAPI 的分工（★ 已改，别按旧印象改回来）
+        · 21 页只管【接口地址 / 密钥 / 合成模型】（tts-1 这类）
+        · 本页管【用谁的声音 + 怎么念】：
+            克隆音色 ID（自定义音色 ID，优先级最高）
+            > 默认音色（本页下拉，从接口拉到的音色列表里选）
+            > 内置兜底 alloy
+        · 音速 / 语调 / 语言 / 性别 也都在本页，且【全部作用到合成】
+          （原先只有音速生效，调语调 / 语言 / 性别没反应 —— 已修）
+        · 音色是 per-contact 的：每个联系人一份，互不影响
+        · 不碰「音频API配置」—— 那是 21 页的凭据与模型
+
+    ★★ 生效范围（设置完就一直用）
+        · 该联系人在 7 页聊天里发的语音：按对话场景决定是否发声音
+        · 14 页语音通话：默认就用这一整套（音色 + 音速 + 语调 + 语言 + 性别）
+-->
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>音色配置</title>
+    <style>
+        /* ===== 统一色板（与 1_shouyeyulan.html / 2_haoyouxinxi.html 完全一致） ===== */
+        :root {
+            --ink: #333336;
+            --ink-2: #55555a;
+            --ink-3: #7a7a80;
+            --ink-4: #a4a4aa;
+            --accent: #4a4a50;
+            --accent-soft: #d5d5d9;
+            --accent-hi: #e6e6ea;
+            --accent-ink: #35353b;
+            --panel: 255, 255, 255;
+            --line: 158, 158, 162;
+            --shade: 48, 48, 54;
+            --glass: 0.5;
+            --blur: 14px;
+            --blur-sm: 8px;
+
+            /* ★ rgb 伴生变量：hex 变量【不能】直接进 rgba()（整条声明会被静默丢弃），
+               要带透明度时必须用这批数值三元组。与 1 / 4 / 7 / 8 / 9 页同一套。 */
+            --ink-rgb: 51, 51, 54;
+            --ink-2-rgb: 85, 85, 90;
+            --ink-3-rgb: 122, 122, 128;
+            --ink-4-rgb: 164, 164, 170;
+            --accent-rgb: 74, 74, 80;
+            --accent-soft-rgb: 213, 213, 217;
+            --accent-hi-rgb: 230, 230, 234;
+            --accent-ink-rgb: 53, 53, 59;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { overflow-x: hidden; touch-action: pan-y; }
+        body {
+            background-color: #dadae0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--ink);
+            display: flex; justify-content: center; align-items: flex-start;
+            min-height: 100dvh; overflow-x: hidden; touch-action: pan-y;
+        }
+
+        .手机主题背景容器 {
+            width: 100%; max-width: 430px; height: 100dvh; min-height: 100dvh;
+            position: relative; background-color: transparent; overflow: hidden; overflow-x: hidden;
+            box-shadow: 0 0 20px rgba(var(--shade), 0.16);
+            display: flex; flex-direction: column; touch-action: pan-y;
+            padding-top: env(safe-area-inset-top, 0px);
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+            padding-left: env(safe-area-inset-left, 0px);
+            padding-right: env(safe-area-inset-right, 0px);
+            -webkit-overflow-scrolling: touch;
+        }
+        @media (max-width: 430px) { .手机主题背景容器 { box-shadow: none; } }
+
+        .主题背景图片 { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; pointer-events: none; }
+        .全局白色遮罩 { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(var(--panel), 0.4); z-index: 1; pointer-events: none; }
+
+        /* ===== 顶部固定区 ===== */
+        .顶部固定区 { position: relative; z-index: 10; background: rgba(var(--panel), 0.5); flex-shrink: 0; padding-bottom: clamp(8px, 2.5vw, 12px); }
+        .顶部导航栏 { display: flex; justify-content: space-between; align-items: center; padding: clamp(10px, 3vw, 14px) clamp(12px, 4vw, 16px) clamp(6px, 2vw, 8px); font-size: clamp(12px, 3.5vw, 14px); color: var(--ink-2); position: relative; }
+        .返回按钮 { cursor: pointer; width: clamp(24px, 7vw, 28px); height: clamp(24px, 7vw, 28px); display: flex; justify-content: center; align-items: center; border-radius: 50%; -webkit-tap-highlight-color: transparent; }
+        .返回按钮 svg { width: clamp(18px, 5vw, 22px); height: clamp(18px, 5vw, 22px); fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+        .中间标题 { font-size: clamp(16px, 4.5vw, 18px); font-weight: 600; color: var(--ink); }
+
+        .启用开关 { display: flex; align-items: center; gap: 6px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+        .启用开关文字 { font-size: clamp(11px, 3vw, 12px); color: var(--ink-3); user-select: none; }
+        .开关轨道 { width: 38px; height: 22px; border-radius: 999px; background: rgba(var(--line), 0.35); position: relative; flex-shrink: 0; border: 1px solid rgba(var(--panel), 0.3); }
+        .开关轨道 .开关圆点 { width: 16px; height: 16px; border-radius: 50%; background: #fff; position: absolute; top: 50%; left: 2px; transform: translateY(-50%); box-shadow: 0 1px 3px rgba(var(--shade), 0.3); }
+        .开关轨道.开启 { background: var(--accent); border-color: var(--accent); }
+        .开关轨道.开启 .开关圆点 { left: calc(100% - 18px); }
+
+        /* ===== 中间滚动区 ===== */
+        .手机界面内容 { flex: 1; overflow-y: auto; overflow-x: hidden; overscroll-behavior-x: none; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; padding-bottom: clamp(16px, 5vw, 20px); position: relative; z-index: 2; background: rgba(var(--panel), 0.04); touch-action: pan-y; scrollbar-width: none; -ms-overflow-style: none; }
+        .手机界面内容::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+        /* ===== 表单卡片 ===== */
+        .表单卡片 { margin: clamp(8px, 2.5vw, 12px) clamp(14px, 4.5vw, 18px); background: rgba(var(--panel), 0.5); border-radius: 18px; padding: clamp(14px, 4vw, 18px); box-shadow: 0 8px 32px rgba(var(--shade), 0.04), inset 0 0 0 1px rgba(var(--panel), 0.12); }
+        .表单组 { margin-bottom: clamp(14px, 4vw, 18px); }
+        .表单组:last-child { margin-bottom: 0; }
+        .表单标签 { display: flex; align-items: center; gap: 6px; font-size: clamp(13px, 3.5vw, 14px); font-weight: 500; color: var(--ink-2); margin-bottom: clamp(6px, 2vw, 8px); }
+        .表单标签 .必填 { color: var(--ink-4); font-weight: 400; font-size: 0.85em; margin-left: auto; }
+        .表单标签 svg { width: clamp(14px, 4vw, 16px); height: clamp(14px, 4vw, 16px); fill: none; stroke: var(--ink-3); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+        .表单输入 { width: 100%; padding: clamp(8px, 2.5vw, 10px) clamp(12px, 3.5vw, 14px); border-radius: 12px; border: 1px solid rgba(var(--panel), 0.15); background: rgba(var(--panel), 0.5); font-size: clamp(13px, 3.5vw, 14px); color: var(--ink-2); outline: none; font-family: inherit; }
+        .表单输入:focus { border-color: rgba(var(--line), 0.6); background: rgba(var(--panel), 0.1); box-shadow: 0 0 0 3px rgba(var(--line), 0.1); }
+        .表单输入::placeholder { color: var(--ink-4); }
+        .分割线 { height: 1px; background: rgba(var(--panel), 0.5); margin: clamp(10px, 3vw, 14px) 0; }
+
+        /* ===== 滑块行 ===== */
+        .滑块行 { display: flex; align-items: center; gap: clamp(8px, 2.5vw, 12px); }
+        .滑块图标 { flex-shrink: 0; width: clamp(18px, 5vw, 20px); height: clamp(18px, 5vw, 20px); color: var(--ink-3); }
+        .滑块图标 svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+        .滑块主体 { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .滑块值 { display: flex; justify-content: space-between; align-items: baseline; }
+        .滑块值 .当前值 { font-size: clamp(11px, 3vw, 12px); color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+        .滑块值 .当前值.默认 { color: var(--ink-4); font-weight: 400; }
+        .滑块刻度 { font-size: 9px; color: var(--ink-4); }
+        input[type="range"] { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 999px; background: rgba(var(--line), 0.3); outline: none; margin: 6px 0; cursor: pointer; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 2px solid var(--accent); box-shadow: 0 1px 3px rgba(var(--shade), 0.25); cursor: pointer; }
+        input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 2px solid var(--accent); box-shadow: 0 1px 3px rgba(var(--shade), 0.25); cursor: pointer; }
+
+        /* ===== 语言选择 ===== */
+        .语言选择 { position: relative; }
+        .语言选择原生 { width: 100%; padding: clamp(8px, 2.5vw, 10px) clamp(12px, 3.5vw, 14px); border-radius: 12px; border: 1px solid rgba(var(--panel), 0.15); background: rgba(var(--panel), 0.5); font-size: clamp(13px, 3.5vw, 14px); color: var(--ink-2); outline: none; font-family: inherit; cursor: pointer; appearance: none; }
+        .语言选择原生:focus { border-color: rgba(var(--line), 0.6); background: rgba(var(--panel), 0.1); box-shadow: 0 0 0 3px rgba(var(--line), 0.1); }
+        .语言选择::after { content: ''; position: absolute; right: 14px; top: 50%; transform: translateY(-50%) rotate(45deg); width: 6px; height: 6px; border-right: 2px solid var(--ink-3); border-bottom: 2px solid var(--ink-3); pointer-events: none; }
+
+        /* ===== 试听按钮 ===== */
+        .试听按钮 { display: inline-flex; align-items: center; gap: 5px; padding: clamp(5px, 1.5vw, 7px) clamp(12px, 3.5vw, 14px); border-radius: 999px; border: 1px solid rgba(var(--line), 0.4); background: rgba(var(--panel), 0.5); color: var(--ink-2); font-size: clamp(11px, 3vw, 12px); cursor: pointer; font-family: inherit; -webkit-tap-highlight-color: transparent; }
+        .试听按钮 svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+        .试听按钮.播放中 { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .试听行 { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .试听提示 { font-size: clamp(10px, 2.8vw, 11px); color: var(--ink-4); }
+
+        /* 默认音色：列表来源说明（如实标注是接口读到的还是内置的） */
+        .音色来源 { margin-top: clamp(5px, 1.5vw, 7px); font-size: clamp(10px, 2.8vw, 11.5px); color: var(--ink-4); line-height: 1.5; }
+        .音色来源.未配 { color: #c0392b; }
+
+        .启用说明 { position: relative; z-index: 10; flex-shrink: 0; padding: 10px clamp(14px, 4.5vw, 18px) calc(10px + env(safe-area-inset-bottom, 0px)); font-size: clamp(11px, 3vw, 12px); color: var(--ink-3); text-align: center; background: rgba(var(--panel), 0.35); border-top: 1px solid rgba(var(--panel), 0.3); }
+
+        .toast { position: fixed; left: 50%; bottom: clamp(80px, 22vw, 110px); transform: translateX(-50%) translateY(20px); background: rgba(40, 40, 46, 0.92); color: #fff; font-size: 13px; padding: 9px 18px; border-radius: 999px; z-index: 9999; opacity: 0; pointer-events: none; white-space: nowrap; max-width: 86vw; overflow: hidden; text-overflow: ellipsis; transition: opacity .2s, transform .2s; }
+        .toast.显示 { opacity: 1; transform: translateX(-50%) translateY(0); }
+    </style>
+</head>
+<body>
+  <div class="手机主题背景容器">
+    <img class="主题背景图片" src="2【图片】/默认主题背景.png" alt="" onerror="this.style.display='none'" />
+    <div class="全局白色遮罩"></div>
+
+    <!-- ===== 顶部固定区 ===== -->
+    <div class="顶部固定区">
+      <div class="顶部导航栏">
+        <div class="返回按钮" onclick="返回上一页()" aria-label="返回">
+          <svg viewBox="0 0 24 24"><polyline points="15 6 9 12 15 18"></polyline></svg>
+        </div>
+        <span class="中间标题">音色配置</span>
+        <div class="启用开关" id="启用开关" onclick="切换启用()">
+          <span class="启用开关文字" id="顶部开关文字">未启用</span>
+          <span class="开关轨道" id="顶部开关轨道">
+            <span class="开关圆点"></span>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 中间滚动区 ===== -->
+    <div class="手机界面内容">
+
+      <!-- 自定义音色 ID（非必填） -->
+      <div class="表单卡片">
+        <div class="表单组">
+          <div class="表单标签">
+            <svg viewBox="0 0 24 24"><path d="M20 12V8a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"></path><line x1="16" y1="12" x2="20" y2="12"></line></svg>
+            自定义音色 ID
+            <span class="必填">非必填</span>
+          </div>
+          <input type="text" class="表单输入" id="自定义ID输入" placeholder="请输入自定义音色 ID" maxlength="40" oninput="同步展示名()" />
+        </div>
+
+        <!-- ★ 默认音色：没填上面的克隆 ID 时，用 21 页「语音合成 API」里选的默认音色。
+             列表来自「音频API配置.音色列表」；没配就读不到，这里如实提示。 -->
+        <div class="表单组" id="默认音色组">
+          <div class="表单标签">
+            <svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"></path><path d="M5 11a7 7 0 0 0 14 0"></path></svg>
+            默认音色
+            <span class="必填">未填克隆 ID 时生效</span>
+          </div>
+          <div class="语言选择">
+            <select class="语言选择原生" id="默认音色选择" onchange="同步默认音色()"></select>
+          </div>
+          <div class="音色来源" id="音色来源"></div>
+        </div>
+
+        <div class="分割线"></div>
+
+        <!-- 音速调节 -->
+        <div class="表单组">
+          <div class="表单标签">
+            <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            音速
+          </div>
+          <div class="滑块行">
+            <div class="滑块图标" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9z"></path></svg>
+            </div>
+            <div class="滑块主体">
+              <div class="滑块值">
+                <span class="滑块刻度">慢</span>
+                <span class="当前值 默认" id="音速值">1.0×</span>
+                <span class="滑块刻度">快</span>
+              </div>
+              <input type="range" id="音速滑块" min="0.5" max="1.5" step="0.1" value="1.0" oninput="同步音速()" />
+            </div>
+          </div>
+        </div>
+
+        <!-- 语调调节 -->
+        <div class="表单组">
+          <div class="表单标签">
+            <svg viewBox="0 0 24 24"><path d="M12 3v18M5 8v8M19 8v8M2 11v2M22 11v2"></path></svg>
+            语调
+          </div>
+          <div class="滑块行">
+            <div class="滑块图标" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"></path><path d="M16 8a5 5 0 0 1 0 8"></path><line x1="19" y1="5" x2="19" y2="19"></line></svg>
+            </div>
+            <div class="滑块主体">
+              <div class="滑块值">
+                <span class="滑块刻度">低</span>
+                <span class="当前值 默认" id="语调值">1.0×</span>
+                <span class="滑块刻度">高</span>
+              </div>
+              <input type="range" id="语调滑块" min="0.5" max="1.5" step="0.1" value="1.0" oninput="同步语调()" />
+            </div>
+          </div>
+        </div>
+
+        <div class="分割线"></div>
+
+        <!-- 多语言选择 -->
+        <div class="表单组">
+          <div class="表单标签">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"></path></svg>
+            语言
+          </div>
+          <div class="语言选择">
+            <select class="语言选择原生" id="语言选择" onchange="同步语言()">
+              <option value="zh">中文</option>
+              <option value="en">English（英语）</option>
+              <option value="ja">日本語（日语）</option>
+              <option value="ko">한국어（韩语）</option>
+              <option value="fr">Français（法语）</option>
+              <option value="de">Deutsch（德语）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- 试听 -->
+      <div class="表单卡片">
+        <div class="试听行">
+          <div>
+            <div class="表单标签" style="margin-bottom: 2px;">
+              <svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>
+              试听效果
+            </div>
+            <div class="试听提示">基于当前参数合成，仅本地预览</div>
+          </div>
+          <button class="试听按钮" id="试听按钮" onclick="切换试听()">
+            <svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>
+            <span id="试听文字">试听</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="启用说明" id="启用说明">关闭则不启用该音色配置，开启则启用</div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- ===== 音频助手：语音合成调用层（内联版）=====
+       3 页「默认音色」下拉要调 助手.兜底音色() 兜底（没配 API 时也列得出音色）；
+       音色优先级（克隆 ID > 默认音色）由它统一算，3 页不自己拼。
+  ★ 这段是内联副本，改请改 音频助手.js 后跑 python3 同步音频助手.py -->
+  <script id="音频助手">
+/**
+ * 音频助手.js —— 语音合成（TTS）的统一调用层
+ *
+ * ★★ 与 AI助手.js / 图片助手.js 同一套思路：
+ *     7 页（聊天里角色发语音）与 14 页（语音通话出声）都要调 TTS，
+ *     两边各写一遍 fetch 会立刻漂移（地址规范化、超时、返回结构、错误分级）。
+ *     这里只写一份，用 同步音频助手.py 内联进几个页面 ——
+ *     页面运行时【不依赖】外部文件，单拷 html 也能跑。
+ *
+ * ★★ 配置从哪来
+ *     读 localStorage「音频API配置」（21_yinpinAPI 写入）：
+ *       { 网址, 密钥, 模型, 模型列表, 时间 }
+ *     ★★ 21 页【只管凭据与模型】：网址 / 密钥 / 模型（tts-1 这类合成模型）。
+ *        音色（voice）与音速 / 语调 / 语言 / 性别 全部归 3 页 per-contact 管 ——
+ *        21 页不再存「音色 / 音色列表」两个字段。
+ *     没配 / 没选模型 → 所有调用返回 { 好:false, 原因:'未配置' }，
+ *     ★ 由调用方决定降级：7 页退成普通文字回复（语音没有「占位」这回事 ——
+ *       一段静音只会让人以为手机坏了，比不发更糟）。
+ *
+ * ★★ 音色从哪来（三级，由 取音色() 统一算）
+ *     ① 联系人在 3 页填了「自定义音色 ID」→ 用他的（克隆音色，优先级最高）
+ *     ② 没填 → 用这位联系人在 3 页「默认音色」下拉里选的那个（存在分桶键里）
+ *     ③ 都没有（压根没配过）→ 退回内置兜底 'alloy'
+ *     ★ per-contact，不再是全站一个默认 —— 每个联系人可以有自己的声音。
+ *
+ * ★★ 地址规范化（各家 TTS 端点不一样，不能让用户自己猜后缀）
+ *     https://api.openai.com      → /v1/audio/speech
+ *     https://api.openai.com/v1   → /audio/speech
+ *     https://x.com/v1/（多斜杠） → /audio/speech
+ *     api.openai.com（缺协议）    → 补 https://
+ *     主选 404 → 自动试另一种拼法，两次都失败才报错
+ *
+ * ★★ 音色列表端点各家不统一（有的根本没有）
+ *     /v1/audio/voices → /v1/voices → /v1/models 里挑 tts
+ *     全读不到 → 退化到内置常见音色名表，并在界面上说明来源
+ *
+ * ★★ 返回的是二进制，不是 JSON
+ *     ✓ 200 且 content-type 像音频 → 转 blob
+ *     ✓ 200 但给的是 JSON → 多半是报错体，取 error.message 说清楚
+ *     ✗ 401/403 → 密钥不对；404 → 地址不对（已试过两种拼法）
+ *     ✗ 429 → 额度或限流；fetch reject → 跨域被拦或网络不通
+ *     超时 → 主动 abort
+ *
+ * ★ 安全：密钥只在本机 localStorage，只发给【用户自己填的那个地址】，
+ *     本文件不做任何上传到第三方的事。
+ */
+(function (global) {
+    'use strict';
+
+    const 配置键 = '音频API配置';
+    const 默认超时 = 45000;   // ★ TTS 比聊天慢，但一般比生图快，取 45 秒
+
+    /* ---------- 存档 ---------- */
+    function 读配置() {
+        try {
+            const v = JSON.parse(global.localStorage.getItem(配置键) || 'null');
+            return v && typeof v === 'object' ? v : null;
+        } catch (e) { return null; }
+    }
+
+    /** 是否可用（没配就别发请求，省得每次都等超时） */
+    function 已配置() {
+        const c = 读配置();
+        return !!(c && c.网址 && c.密钥);
+    }
+
+    /* ---------- 地址规范化 ---------- */
+    /** 补协议、去尾部斜杠 */
+    function 规范化(原) {
+        let s = String(原 || '').trim();
+        if (!s) return '';
+        if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
+        return s.replace(/\/+$/, '');
+    }
+
+    function 已带版本(基) { return /\/v\d+[a-z]*$/i.test(基); }
+
+    /** 拼出 TTS 端点的候选地址 */
+    function 候选合成地址(基) {
+        const b = 规范化(基);
+        if (!b) return [];
+        return 已带版本(b)
+            ? [b + '/audio/speech']
+            : [b + '/v1/audio/speech', b + '/audio/speech'];
+    }
+
+    /** 拼出音色列表端点的候选地址（多家不统一，全都试一遍） */
+    function 候选音色地址(基) {
+        const b = 规范化(基);
+        if (!b) return [];
+        const 后缀 = 已带版本(b) ? [''] : ['/v1', ''];
+        const 表 = [];
+        后缀.forEach(p => {
+            表.push(b + p + '/audio/voices');
+            表.push(b + p + '/voices');
+        });
+        return 表;
+    }
+
+    /** 拼出模型列表端点（作为音色列表的最后兜底） */
+    function 候选模型地址(基) {
+        const b = 规范化(基);
+        if (!b) return [];
+        return 已带版本(b) ? [b + '/models'] : [b + '/v1/models', b + '/models'];
+    }
+
+    /* ---------- 音色名过滤 ---------- */
+    const 语音关键词 = ['tts', 'speech', 'voice', 'audio', 'kokoro', 'eleven', 'fish', 'azure', 'cosy'];
+    const 非语音关键词 = ['embedding', 'rerank', 'moderation', 'whisper', 'transcribe', 'dall', 'image', 'vision'];
+
+    function 挑语音模型(表) {
+        const 入 = Array.isArray(表) ? 表 : [];
+        const 留 = 入.filter(m => {
+            const 名 = String((m && (m.id || m.名)) || '').toLowerCase();
+            if (!名) return false;
+            if (非语音关键词.some(k => 名.indexOf(k) >= 0)) return false;
+            return 语音关键词.some(k => 名.indexOf(k) >= 0);
+        });
+        return 留.length ? 留 : [];
+    }
+
+    /** 内置兜底音色：读不到列表时用（OpenAI 官方那几个 + 几家常见的） */
+    function 兜底音色() {
+        return [
+            { id: 'alloy', 名: 'alloy（中性 · 清晰）' },
+            { id: 'echo', 名: 'echo（男声 · 沉稳）' },
+            { id: 'fable', 名: 'fable（女声 · 轻柔）' },
+            { id: 'onyx', 名: 'onyx（男声 · 低沉）' },
+            { id: 'nova', 名: 'nova（女声 · 明亮）' },
+            { id: 'shimmer', 名: 'shimmer（女声 · 温和）' },
+        ];
+    }
+
+    /**
+     * ★ 全站最后兜底音色：某位联系人【没配过任何音色】时用。
+     *   21 页不再存默认音色（那会让所有联系人共用一个声音），
+     *   所以这里需要一个"最后还有话说"的值 —— 取内置表第一个 alloy。
+     *   ★ 各家服务不一定真有这个名字，但总比不传 voice 直接报错好。
+     */
+    function 兜底音色名() { return 兜底音色()[0].id; }
+
+    /** 内置兜底模型：读不到 /models 时用（OpenAI / 兼容层常见的 TTS 模型） */
+    function 兜底模型() {
+        return [
+            { id: 'tts-1', 名: 'tts-1（标准 · 快）' },
+            { id: 'tts-1-hd', 名: 'tts-1-hd（高清 · 慢一点）' },
+            { id: 'gpt-4o-mini-tts', 名: 'gpt-4o-mini-tts（可指令语气）' },
+        ];
+    }
+
+    /**
+     * 拉一次可用【模型】列表（tts-1 这类合成模型）。
+     * ★ 与 拉音色() 是两件事：模型决定"用哪个引擎合成"，音色决定"用谁的声音"。
+     *   21 页只选模型，3 页只选音色 —— 别混。
+     *
+     * @returns {Promise<{好:boolean, 列表:Array<{id,名}>, 原因:string, 来源:string}>}
+     *          来源 = '接口' | '内置'
+     */
+    async function 拉模型(网址, 密钥, 选项) {
+        const 选 = 选项 || {};
+        if (!String(网址 || '').trim()) return { 好: false, 列表: [], 原因: '请先填接口地址', 来源: '' };
+        if (!String(密钥 || '').trim()) return { 好: false, 列表: [], 原因: '请先填密钥', 来源: '' };
+
+        const 超时 = 选.超时 || 默认超时;
+        const 记录 = 选.记录;
+        const 头 = { 'Authorization': 'Bearer ' + 密钥 };
+
+        for (const url of 候选模型地址(网址)) {
+            try {
+                const r = await 带超时(url, 头, null, 超时, 记录);
+                if (!r || !r.ok) continue;
+                const j = await r.json().catch(() => null);
+                const 原始 = (j && j.data) || (Array.isArray(j) ? j : null);
+                if (!Array.isArray(原始) || !原始.length) continue;
+                /* ★ 先挑像语音的（tts/speech/audio…），挑不出来就原样全列 ——
+                     有的服务命名不按套路，全滤光了反而没法选。 */
+                const 像 = 挑语音模型(原始);
+                const 用 = 像.length ? 像 : 原始;
+                const 列 = 用.map(m => ({
+                    id: String((m && (m.id || m.名)) || '').trim(),
+                    名: String((m && (m.id || m.名)) || '').trim(),
+                })).filter(v => v.id);
+                if (列.length) return { 好: true, 列表: 列, 原因: '', 来源: '接口' };
+            } catch (e) { /* 换下一种拼法 */ }
+        }
+
+        return { 好: true, 列表: 兜底模型(), 原因: '没读到模型列表，下面是常见的语音合成模型', 来源: '内置' };
+    }
+
+    /* ---------- 请求小工具 ---------- */
+    function 带超时(url, 头, 体, 超时, 记录) {
+        const 控制器 = new (global.AbortController || function () {})();
+        const 计时 = setTimeout(() => { if (控制器.abort) 控制器.abort(); }, 超时);
+        if (记录 && 记录.push) 记录.push(String(url));
+        return global.fetch(url, {
+            method: 体 ? 'POST' : 'GET',
+            headers: 头,
+            body: 体 || undefined,
+            signal: 控制器.signal,
+        }).then(r => { clearTimeout(计时); return r; },
+            e => { clearTimeout(计时); throw e; });
+    }
+
+    function 说错误(状态, 文本) {
+        if (状态 === 401 || 状态 === 403) return '密钥不对或没有权限（' + 状态 + '）';
+        if (状态 === 404) return '接口地址不对（已试过两种拼法，都 404）';
+        if (状态 === 429) return '额度用完了或触发限流（429）';
+        if (状态 === 400) return '请求被拒（400）：' + String(文本 || '').slice(0, 80);
+        if (状态 >= 500) return '服务端出错（' + 状态 + '）';
+        return '请求失败（' + 状态 + '）';
+    }
+
+    function 取错文(json) {
+        try {
+            const e = json && (json.error || json.message || json.detail);
+            if (!e) return '';
+            return typeof e === 'string' ? e : (e.message || String(e));
+        } catch (err) { return ''; }
+    }
+
+    /**
+     * 拉一次可用音色列表。
+     * ★ 与 合成() 分开传网址与密钥 —— 填配置那一步还没存盘，
+     *   不能读存档，否则「改了地址但没保存」时会拿旧地址去试。
+     *
+     * @returns {Promise<{好:boolean, 列表:Array<{id,名}>, 原因:string, 来源:string}>}
+     *          来源 = '接口' | '内置' —— 界面上要如实说明，别让人以为主播真的有这些音色
+     */
+    async function 拉音色(网址, 密钥, 选项) {
+        const 选 = 选项 || {};
+        if (!String(网址 || '').trim()) return { 好: false, 列表: [], 原因: '请先填接口地址', 来源: '' };
+        if (!String(密钥 || '').trim()) return { 好: false, 列表: [], 原因: '请先填密钥', 来源: '' };
+
+        const 超时 = 选.超时 || 默认超时;
+        const 记录 = 选.记录;
+        const 头 = { 'Authorization': 'Bearer ' + 密钥 };
+
+        /* ① 先试各家音色端点 */
+        for (const url of 候选音色地址(网址)) {
+            try {
+                const r = await 带超时(url, 头, null, 超时, 记录);
+                if (!r || !r.ok) continue;
+                const j = await r.json().catch(() => null);
+                const 原始 = (j && (j.voices || j.data || j.models)) || (Array.isArray(j) ? j : null);
+                if (!Array.isArray(原始) || !原始.length) continue;
+                const 列 = 原始.map(v => ({
+                    id: String((v && (v.voice_id || v.id || v.name || v)) || '').trim(),
+                    名: String((v && (v.name || v.显示名 || v.id || v)) || '').trim(),
+                })).filter(v => v.id);
+                if (列.length) return { 好: true, 列表: 列, 原因: '', 来源: '接口' };
+            } catch (e) { /* 换下一个端点 */ }
+        }
+
+        /* ② 再试 /models，把像语音的挑出来 */
+        for (const url of 候选模型地址(网址)) {
+            try {
+                const r = await 带超时(url, 头, null, 超时, 记录);
+                if (!r || !r.ok) continue;
+                const j = await r.json().catch(() => null);
+                const 原始 = (j && j.data) || (Array.isArray(j) ? j : null);
+                if (!Array.isArray(原始)) continue;
+                const 列 = 挑语音模型(原始).map(m => ({
+                    id: String(m.id || m.名 || ''),
+                    名: String(m.id || m.名 || ''),
+                })).filter(v => v.id);
+                if (列.length) return { 好: true, 列表: 列, 原因: '', 来源: '接口' };
+            } catch (e) { /* 换下一个 */ }
+        }
+
+        /* ③ 全读不到 → 内置表兜底（至少还能选，不至于卡死） */
+        return { 好: true, 列表: 兜底音色(), 原因: '没读到音色列表，下面是常见音色名', 来源: '内置' };
+    }
+
+    /**
+     * 合成一段语音。
+     * @param {string} 文 要念的话
+     * @param {object} 选项 { 音色, 网址, 密钥, 音速, 超时, 记录 }
+     * @returns {Promise<{好:boolean, blob:Blob|null, 类型:string, 原因:string}>}
+     */
+    async function 合成(文, 选项) {
+        const 选 = 选项 || {};
+        const 配置 = 读配置();
+        const 网址 = 选.网址 || (配置 && 配置.网址) || '';
+        const 密钥 = 选.密钥 || (配置 && 配置.密钥) || '';
+        const 音色 = 选.音色 || (配置 && 配置.音色) || 兜底音色名();
+
+        if (!网址 || !密钥) return { 好: false, blob: null, 类型: '', 原因: '未配置' };
+        const 内容 = String(文 || '').trim();
+        if (!内容) return { 好: false, blob: null, 类型: '', 原因: '没有要念的内容' };
+        if (!音色) return { 好: false, blob: null, 类型: '', 原因: '还没选音色' };
+
+        const 地址表 = 候选合成地址(网址);
+        if (!地址表.length) return { 好: false, blob: null, 类型: '', 原因: '接口地址为空' };
+
+        const 超时 = 选.超时 || 默认超时;
+        const 记录 = 选.记录;
+        const 头 = {
+            'Authorization': 'Bearer ' + 密钥,
+            'Content-Type': 'application/json',
+        };
+
+        /* ★★ 3 页的语音参数全部作用到这里（原先只有音速生效，调语调/语言/性别没反应）
+             各家字段名不统一，所以同一个语义按常见写法都传一份：
+               · 语调 pitch / tone / intonation
+               · 语言 language / lang
+               · 性别 gender / voice_gender
+             ★ 只传【用户真的改过的】（不等于默认值才传）——
+               全字段硬塞上去，遇到校验严的服务会直接 400，
+               默认参数的服务端本来就有，不传更安全。 */
+        const 音速 = (typeof 选.音速 === 'number' && 选.音速 !== 1) ? 选.音速 : 0;
+        const 语调 = (typeof 选.语调 === 'number' && 选.语调 !== 1) ? 选.语调 : 0;
+        const 语言 = String(选.语言 || '').trim();
+        const 性别 = String(选.性别 || '').trim();
+
+        const 体 = JSON.stringify({
+            model: 选.模型 || (配置 && 配置.模型) || 'tts-1',
+            input: 内容,
+            voice: 音色,
+            ...(音速 ? { speed: 音速 } : {}),
+            ...(语调 ? { pitch: 语调, tone: 语调, intonation: 语调 } : {}),
+            ...(语言 ? { language: 语言, lang: 语言 } : {}),
+            ...(性别 ? { gender: 性别, voice_gender: 性别 } : {}),
+            response_format: 'mp3',
+        });
+
+        let 最后原因 = '请求失败';
+        for (const url of 地址表) {
+            try {
+                const r = await 带超时(url, 头, 体, 超时, 记录);
+                if (!r) { 最后原因 = '请求发不出去'; continue; }
+
+                if (!r.ok) {
+                    const t = await r.text().catch(() => '');
+                    let j = null;
+                    try { j = JSON.parse(t); } catch (e) {}
+                    最后原因 = 说错误(r.status, 取错文(j) || t);
+                    continue;                       // 404 的话换下一种拼法再试
+                }
+
+                const 型 = String((r.headers && r.headers.get && r.headers.get('content-type')) || '');
+                if (/json/i.test(型)) {
+                    /* 200 但给了 JSON —— 多半是报错体 */
+                    const j = await r.json().catch(() => null);
+                    return { 好: false, blob: null, 类型: '', 原因: 取错文(j) || '接口返回的不是音频' };
+                }
+
+                const blob = await r.blob().catch(() => null);
+                if (!blob || !blob.size) { 最后原因 = '接口返回了空音频'; continue; }
+                return {
+                    好: true,
+                    blob: blob,
+                    类型: /wav/i.test(型) ? 'audio/wav' : 'audio/mpeg',
+                    原因: '',
+                };
+            } catch (e) {
+                最后原因 = (e && e.name === 'AbortError') ? '合成超时（' + Math.round(超时 / 1000) + ' 秒）'
+                    : '请求发不出去，多半是跨域被拦或网络不通';
+            }
+        }
+        return { 好: false, blob: null, 类型: '', 原因: 最后原因 };
+    }
+
+    /**
+     * 取某位联系人的音色配置（3 页写的分桶键）。
+     * ★ 音色优先级是业务规则，放在这里统一算，7 页与 14 页才不会各写一套：
+     *     ① 联系人填了「自定义音色 ID」（克隆音色）→ 用他的
+     *     ② 没填 → 用这位联系人在 3 页默认音色下拉里选的那个
+     *     ③ 都没配过 → 内置兜底 alloy（21 页不再存全站默认音色）
+     *   ★ 语音参数（音速 / 语调 / 语言 / 性别）也从分桶里带出来 ——
+     *     这些是 3 页 per-contact 调的，7 / 14 页不该自己再拼一份。
+     */
+    function 取音色(联系人ID, 选项) {
+        const 选 = 选项 || {};
+        let 分桶 = null;
+        try {
+            const v = JSON.parse(global.localStorage.getItem('音色配置_' + 联系人ID) || 'null');
+            if (v && typeof v === 'object') 分桶 = v;
+        } catch (e) {}
+
+        const 自定 = String((分桶 && 分桶.自定义ID) || '').trim();
+        const 配置 = 读配置();
+
+        /* 联系人没启用自己的音色配置 → 退回内置兜底，不用他的克隆音色 */
+        const 用分桶 = !!(分桶 && 分桶.已启用 && (自定 || 分桶.音色));
+        const 音色 = 用分桶 ? (自定 || String(分桶.音色 || '').trim()) : 兜底音色名();
+
+        /* ★ 来源要说准：只有【填了克隆 ID】才算克隆；
+             分桶里的「音色」是这位联系人在 3 页从默认列表里选的，
+             标成「克隆」会误导（看着像用了一个不存在的克隆音色）。
+             ★ 这个字段只用于展示与排查，7 / 14 页只认 有 与 音色。 */
+        const 来源 = (用分桶 && 自定) ? '克隆' : (用分桶 ? '联系人' : '默认');
+
+        return {
+            有: !!音色,
+            音色: 音色,
+            来源: 来源,
+            音速: (分桶 && typeof 分桶.音速 === 'number') ? 分桶.音速 : 1,
+            /* ★★ 下面三个原先【存了但没用】—— 用户在 3 页调了语调 / 语言 / 性别，
+                 合成时压根没传，等于白调。现在一并返回给调用方。 */
+            语调: (分桶 && typeof 分桶.语调 === 'number') ? 分桶.语调 : 1,
+            语言: String((分桶 && 分桶.语言) || '').trim(),
+            性别: String((分桶 && 分桶.性别) || '').trim(),
+            已启用: (分桶 && typeof 分桶.已启用 === 'boolean') ? 分桶.已启用 : false,
+            配置: 配置,
+        };
+    }
+
+    /* ---------- 对外 ---------- */
+    global.音频助手 = {
+        读配置: 读配置,
+        已配置: 已配置,
+        规范化: 规范化,
+        候选合成地址: 候选合成地址,
+        候选音色地址: 候选音色地址,
+        候选模型地址: 候选模型地址,
+        挑语音模型: 挑语音模型,
+        兜底音色: 兜底音色,
+        兜底音色名: 兜底音色名,
+        兜底模型: 兜底模型,
+        拉音色: 拉音色,
+        拉模型: 拉模型,
+        合成: 合成,
+        取音色: 取音色,
+    };
+})(typeof window !== 'undefined' ? window : this);
+  </script>
+  <script>
+    'use strict';
+
+    /* ============================================================
+     *  上下文：从 URL 参数读取当前联系人 id
+     *    ?id=xxx&mode=edit  → 编辑已有联系人音色
+     *    ?mode=new 或 无 id  → 新建联系人（临时键）
+     * ============================================================ */
+    const 参数 = new URLSearchParams(location.search);
+    const 当前ID = 参数.get('id') || '';
+    const 模式 = 参数.get('mode') || '';
+    const 是新建 = 模式 === 'new' || !当前ID;
+
+    // ★ 是否允许读写旧全局键「音色配置」。
+    //   显式 ?mode=new 表示「为一个全新联系人配音色」，绝不能继承上一位联系人
+    //   留下的全局配置 —— 否则新联系人一进来就顶着别人的音色且开关显示「已启用」，
+    //   用户点一下开关反而把它关掉了。
+    //   而不带 mode 直接打开（旧链接 / 老数据）才走全局键兜底，保住向后兼容。
+    const 允许全局兜底 = 模式 !== 'new';
+
+    // 分桶键 / 全局兜底键
+    const 全局键 = '音色配置';
+    function 分桶键() { return 当前ID ? ('音色配置_' + 当前ID) : '音色配置_临时'; }
+
+    // 返回目标：编辑 → 带 id 回 2 页；新建 → 带 mode=new
+    /* ★ 来源透传：2 页进来时带的 ?from= 要原样带回去，
+       否则 2 页回到 3 页再返回，2 页就不知道该回哪了（会掉回通讯录）。 */
+    const 来源 = 参数.get('from') || '';
+    const 基础返回 = 是新建 ? '2_haoyouxinxi.html?mode=new'
+                          : ('2_haoyouxinxi.html?id=' + encodeURIComponent(当前ID) + '&mode=edit');
+    const 目标返回页 = 基础返回 + (来源 ? ('&from=' + encodeURIComponent(来源)) : '');
+    window.取返回页 = () => 目标返回页;      // 对外暴露，供测试与业务接管
+
+    function 读(键) { try { return localStorage.getItem(键); } catch (e) { return null; } }
+    function 写(键, 值) { try { localStorage.setItem(键, 值); return true; } catch (e) { return false; } }
+
+    function 转义HTML(str) { return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s])); }
+
+    let toastTimer = null;
+    function showToast(消息) {
+      const el = document.getElementById('toast');
+      if (!el) return;
+      el.textContent = 消息; el.classList.add('显示');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('显示'), 1600);
+    }
+
+    /* ============================================================
+     *  默认值
+     * ============================================================ */
+    function 默认配置() {
+      return { 音色: '', 自定义ID: '', 音速: 1.0, 语调: 1.0, 语言: 'zh', 性别: '', 已启用: false };
+    }
+
+    /* ============================================================
+     *  读取配置：优先分桶键 → 兜底全局键 → 默认
+     * ============================================================ */
+    function 读取配置() {
+      const 配置 = 默认配置();
+      let 存储 = null;
+      // 1) 分桶键（编辑模式）
+      if (当前ID) {
+        try { const v = JSON.parse(读(分桶键())); if (v && typeof v === 'object') 存储 = v; } catch (e) {}
+      }
+      // 2) 新建模式：读临时键
+      if (!存储 && 是新建) {
+        try { const v = JSON.parse(读('音色配置_临时')); if (v && typeof v === 'object') 存储 = v; } catch (e) {}
+      }
+      // 3) 兜底：旧全局键（显式新建时不兜底，见 允许全局兜底 的说明）
+      if (!存储 && 允许全局兜底) {
+        try { const v = JSON.parse(读(全局键)); if (v && typeof v === 'object') 存储 = v; } catch (e) {}
+      }
+      if (存储) {
+        Object.keys(配置).forEach(k => { if (存储[k] !== undefined && 存储[k] !== '') 配置[k] = 存储[k]; });
+      }
+      配置.音速 = Number(配置.音速) || 1.0;
+      配置.语调 = Number(配置.语调) || 1.0;
+      return 配置;
+    }
+
+    let 当前 = 默认配置();
+
+    /* ============================================================
+     *  组装最终配置
+     * ★★ 音色字段的取法（别再写成只有 自定义ID）
+     *     本页有两个音色来源：
+     *       ① 「自定义音色 ID」= 克隆音色 —— 填了就以它为准
+     *       ② 「默认音色」下拉 = 从列表里挑的现成音色
+     *     原先这里直接写「音色: 自定义ID」—— 没填克隆 ID 时就是空字符串，
+     *     于是用户刚在下拉里选好的音色，一调音速 / 语调 / 语言（触发重新组装）
+     *     就被覆盖成空，等于白选。这种 bug 不报错，只是声音悄悄变回默认。
+     *     所以取「克隆 ID 优先，其次下拉，最后保留已存的」。
+     * ============================================================ */
+    function 组装配置(已启用) {
+      const 自定义ID = (document.getElementById('自定义ID输入').value || '').trim();
+      /* 下拉当前选中的值（禁用 / 未配置时当作没选） */
+      const 下拉 = document.getElementById('默认音色选择');
+      const 下拉值 = (下拉 && !下拉.disabled) ? String(下拉.value || '').trim() : '';
+      // 新建模式：若 2 页已存有该联系人（同名），尝试从「好友信息_<id>」补性别
+      let 性别 = 当前.性别 || '';
+      if (!性别 && 当前ID) {
+        try { const 好友 = JSON.parse(读('好友信息_' + 当前ID)); if (好友 && 好友.性别) 性别 = 好友.性别; } catch (e) {}
+      }
+      if (!性别) {
+        try { const 好友 = JSON.parse(读('好友信息')); if (好友 && 好友.性别) 性别 = 好友.性别; } catch (e) {}
+      }
+      return {
+        音色: 自定义ID || 下拉值 || String((当前 && 当前.音色) || '').trim(),
+        自定义ID: 自定义ID,
+        音速: Number(document.getElementById('音速滑块').value) || 1.0,
+        语调: Number(document.getElementById('语调滑块').value) || 1.0,
+        语言: document.getElementById('语言选择').value,
+        性别: 性别,
+        已启用: !!已启用,
+      };
+    }
+
+    /* ============================================================
+     *  回填表单
+     * ============================================================ */
+    function 回填表单() {
+      document.getElementById('自定义ID输入').value = 当前.自定义ID || '';
+      document.getElementById('音速滑块').value = 当前.音速;
+      document.getElementById('语调滑块').value = 当前.语调;
+      同步音速();
+      同步语调();
+      const 语言选择 = document.getElementById('语言选择');
+      语言选择.value = 当前.语言 || 'zh';
+      渲染默认音色();
+      刷新顶部开关();
+    }
+
+    /* ===== 滑块 / 语言 交互 ===== */
+    function 同步音速() {
+      const v = Number(document.getElementById('音速滑块').value) || 1.0;
+      const el = document.getElementById('音速值');
+      el.textContent = v.toFixed(1) + '×';
+      el.classList.toggle('默认', v === 1.0);
+      参数变更();
+    }
+    function 同步语调() {
+      const v = Number(document.getElementById('语调滑块').value) || 1.0;
+      const el = document.getElementById('语调值');
+      el.textContent = v.toFixed(1) + '×';
+      el.classList.toggle('默认', v === 1.0);
+      参数变更();
+    }
+    function 同步语言() { 参数变更(); }
+    function 同步展示名() { 参数变更(); }
+
+    /* ============================================================
+     *  默认音色：没填克隆 ID 时，用【这位联系人】在下面选的那个
+     *   ★★ 21 页只管「接口地址 / 密钥 / 模型」，音色（voice）归本页 per-contact 管 ——
+     *     每个联系人可以有自己的声音，不再是全站共用一个默认。
+     *   ★ 音色列表由本页【自己拉一次】（音频助手.拉音色），
+     *     不再从「音频API配置.音色列表」读 —— 那个字段 21 页已经不写了。
+     *   ★ 选中的值写进本页的分桶键「音色配置_<id>.音色」，
+     *     ★ 不碰「音频API配置」—— 那是 21 页的凭据与模型，别写坏。
+     * ============================================================ */
+    function 读音频配置() {
+      try {
+        const v = JSON.parse(localStorage.getItem('音频API配置') || 'null');
+        return v && typeof v === 'object' ? v : null;
+      } catch (e) { return null; }
+    }
+
+    /* 拉到的音色列表（按网址+密钥缓存，换配置就重拉） */
+    let 音色列表 = [];
+    let 音色表键 = '';
+    let 音色来源说明 = '';
+
+    /** 列出下拉项：列表 + （已存但不在列表里的那个） */
+    function 填音色下拉(当前) {
+      const 选择 = document.getElementById('默认音色选择');
+      if (!选择) return;
+      选择.innerHTML = '';
+      音色列表.forEach(v => {
+        const 项 = document.createElement('option');
+        项.value = String(v.id || '');
+        项.textContent = String(v.名 || v.id || '');
+        选择.appendChild(项);
+      });
+      if (当前 && !音色列表.some(v => String(v.id) === 当前)) {
+        const 项 = document.createElement('option');
+        项.value = 当前;
+        项.textContent = 当前 + '（已存，不在列表里）';
+        选择.appendChild(项);
+      }
+      选择.value = 当前 || '';
+    }
+
+    /**
+     * 渲染默认音色区：
+     *   ① 没配音频 API → 禁用，如实提示去 21 页配
+     *   ② 配了 → 用拉到的列表（或内置兜底）填充，选中当前分桶里存的
+     */
+    async function 渲染默认音色() {
+      const 选择 = document.getElementById('默认音色选择');
+      const 来源 = document.getElementById('音色来源');
+      if (!选择 || !来源) return;
+
+      const 配置 = 读音频配置();
+      const 助手 = window.音频助手;
+      const 已存音色 = String((当前 && 当前.音色) || '').trim();
+
+      if (!配置 || !配置.网址 || !配置.密钥) {
+        来源.className = '音色来源 未配';
+        来源.textContent = '还没配语音合成 API（去「我的 → 音频API」填网址与密钥），配好后这里能选音色。';
+        选择.disabled = true;
+        选择.innerHTML = '<option>（未配置）</option>';
+        return;
+      }
+
+      选择.disabled = false;
+      来源.className = '音色来源';
+      来源.textContent = '正在读取可用音色…';
+
+      /* ★ 按「网址+密钥」缓存：同一次会话里反复进出 3 页不必每次重拉，
+           换了配置（键变了）就自动重拉。 */
+      const 键 = String(配置.网址) + '|' + String(配置.密钥);
+      if (键 !== 音色表键) {
+        音色表键 = 键;
+        if (助手 && typeof 助手.拉音色 === 'function') {
+          try {
+            const 果 = await 助手.拉音色(配置.网址, 配置.密钥, { 超时: 15000 });
+            音色列表 = (果 && 果.好 && 果.列表 && 果.列表.length) ? 果.列表 : [];
+            音色来源说明 = (果 && 果.来源 === '内置') ? '（读不到列表，下面是常见音色名）' : '';
+          } catch (e) { 音色列表 = []; }
+        }
+        if (!音色列表.length && 助手 && typeof 助手.兜底音色 === 'function') {
+          音色列表 = 助手.兜底音色();
+          音色来源说明 = '（读不到列表，下面是常见音色名）';
+        }
+      }
+
+      填音色下拉(已存音色);
+
+      来源.className = '音色来源';
+      来源.textContent = (音色来源说明 ? 音色来源说明 + ' ' : '')
+        + (已存音色 ? '当前音色：' + 已存音色 + '。上面填了克隆 ID 就以克隆的为准。'
+                  : '选一个音色；上面填了克隆 ID 就以克隆的为准。');
+    }
+
+    /** 换音色 → 写进【本联系人的分桶】，不动 21 页的音频API配置 */
+    function 同步默认音色() {
+      const 选择 = document.getElementById('默认音色选择');
+      if (!选择 || 选择.disabled) return;
+      const 值 = String(选择.value || '').trim();
+      if (!值 || !当前) return;
+      当前.音色 = 值;
+      if (写(分桶键(), JSON.stringify(当前))) showToast('音色已改为 ' + 值);
+      渲染默认音色();
+    }
+    window.同步默认音色 = 同步默认音色;
+
+    // 参数改动后自动落盘（仅当音色已启用 —— 未启用时改动不该生效）。
+    //   原先这两个回调是空函数，用户调完滑块直接返回，改动就丢了。
+    //   已就绪 用来挡住初始化回填触发的误保存。
+    let 已就绪 = false;
+    function 参数变更() {
+      if (!已就绪 || !当前.已启用) return;
+      执行写入(true, true);   // 静默保存，不打断用户操作
+    }
+
+    /* ===== 顶部开关 UI ===== */
+    function 刷新顶部开关() {
+      const 轨道 = document.getElementById('顶部开关轨道');
+      const 文字 = document.getElementById('顶部开关文字');
+      if (当前.已启用) { 轨道.classList.add('开启'); 文字.textContent = '已启用'; }
+      else { 轨道.classList.remove('开启'); 文字.textContent = '未启用'; }
+    }
+
+    /* ===== 切换启用 ===== */
+    function 切换启用() {
+      if (当前.已启用) 执行写入(false);
+      else { if (!校验()) return; 执行写入(true); }
+    }
+
+    function 校验() {
+      const 自定义ID = (document.getElementById('自定义ID输入').value || '').trim();
+      if (自定义ID.length > 40) { showToast('自定义音色 ID 过长'); return false; }
+      return true;
+    }
+
+    /* ===== 写入（分桶） ===== */
+    function 执行写入(已启用, 静默) {
+      const 配置 = 组装配置(已启用);
+      const 目标键 = 分桶键();
+      if (!写(目标键, JSON.stringify(配置))) { showToast('写入失败：本地存储不可用'); return false; }
+      // 新建模式同时写临时键（防止分桶键为「临时」之外的意外）
+      if (是新建) 写('音色配置_临时', JSON.stringify(配置));
+      // 兼容：同步写一份全局键（旧代码 / 2 页兜底可读）。
+      //   显式新建时不写 —— 写了就会成为下一位新联系人的「遗留配置」，是串味的根源。
+      if (允许全局兜底) 写(全局键, JSON.stringify(配置));
+      // 同步内存与 UI
+      当前 = Object.assign(当前, 配置);
+      刷新顶部开关();
+      if (!静默) showToast(已启用 ? '已启用该音色配置' : '已关闭，不启用该音色');
+      return true;
+    }
+
+    /* ===== 返回（不改动状态，仅导航；参数带回 id / mode） ===== */
+    function 返回上一页() { location.href = 目标返回页; }
+
+    /* ===== 试听（演示） ===== */
+    let 试听中 = false, 试听Timer = null;
+    function 切换试听() {
+      试听中 = !试听中;
+      const btn = document.getElementById('试听按钮');
+      const txt = document.getElementById('试听文字');
+      if (试听中) {
+        btn.classList.add('播放中'); txt.textContent = '停止';
+        showToast('正在试听…（演示）');
+        试听Timer = setTimeout(() => { 试听中 = false; btn.classList.remove('播放中'); txt.textContent = '试听'; }, 3000);
+      } else {
+        clearTimeout(试听Timer);
+        btn.classList.remove('播放中'); txt.textContent = '试听';
+      }
+    }
+
+    /* ===== 初始化 ===== */
+    (function 初始化() {
+      当前 = 读取配置();
+      回填表单();
+      已就绪 = true;   // 放在回填之后，避免初始化本身触发一次写盘
+    })();
+  </script>
+
+<script>
+/* ===== 主题背景：读全局设置（由 9_zhutishezhi.html 写入，全站共用）=====
+   ① 自定义：直接用 dataURL
+   ② 内置：按索引取 2【图片】 下的主题（0 = 默认主题背景，1~5 = 背景1~背景5）
+      扩展名自动探测 png → jpg → jpeg → webp，素材不是 png 也显示得出来
+   ③ 没设置 / 索引为 0：保持页面里写死的默认图，不动 */
+(function () {
+    var 图 = document.querySelector('.主题背景图片');
+    if (!图) return;
+    var 存 = null;
+    try { 存 = JSON.parse(localStorage.getItem('主题背景') || 'null'); } catch (e) {}
+    if (!存) return;
+
+    if (存.源 === '自定义' && 存.数据) { 图.src = 存.数据; return; }
+
+    if (存.源 === '默认' && typeof 存.索引 === 'number' && 存.索引 > 0) {
+        var 名 = '背景' + 存.索引;
+        var 候选 = ['png', 'jpg', 'jpeg', 'webp'], 序 = 0;
+        图.addEventListener('error', function () {
+            if (序 < 候选.length) 图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+        });
+        图.src = '2【图片】/' + 名 + '.' + 候选[序++];
+    }
+})();
+</script>
+    <script id="全局音乐">
+/* =============================================================================
+ * 全局音乐.js —— 跨页续播（4 页开始播，切到任何界面都不中断）
+ *
+ * 【为什么需要它】
+ *   4_tongxun 有自己的完整 UI 播放器，但 HTML 页面之间是真跳转：
+ *   一离开 4 页，整个 JS 上下文连同 <audio> 一起被销毁，音乐就断了。
+ *   本脚本在每个页面挂一个「无界面的续播器」：进来先读存档，
+ *   如果上次是在播，就重建 audio、跳回原秒数、接着播。
+ *
+ * 【它不是什么】
+ *   不做 UI、不做播放列表 —— 那些是 4 页播放器的职责。
+ *   这里只负责「让声音不断」，回到 4 页时完整播放器会自然接手。
+ *
+ * 【契约（改这里前务必看）】
+ *   ① 存档键 '音乐播放状态'，格式必须与 4 页 保存状态() 完全一致：
+ *        { id, 名, 类型:'默认'|'上传', 时间:秒, 播放中:bool }
+ *      —— 两边都写、都读同一个键，才能无缝交接。
+ *   ② ★ 让位规则：页面里若存在 #音乐播放器（4 页的），本脚本【完全不启动】。
+ *      否则两个 audio 会同时出声。这是唯一的冲突防线，别删。
+ *   ③ 上传曲目在 IndexedDB：库名 '音乐库' / 表名 '音频'（与 4 页同名同结构）。
+ *
+ * 【让位 API（其它页面调用）】
+ *   window.全局音频.暂停('语音消息') / .恢复('语音消息')
+ *   window.全局音频.暂停('语音通话') / .恢复('语音通话')
+ *   7 页播语音条、14 页通话时分别调用，避免两路声音叠在一起。
+ *   ★ 用【原因集合】而非布尔：语音与通话可能重叠，布尔会在语音播完时
+ *     把仍在通话中的音乐放出来。全部原因解除才恢复。
+ *   ★ 会记住「占用前是否在播」，本来没放音乐就不会凭空启动。
+ *
+ * 【自动播放限制】
+ *   浏览器会拦「没有用户手势的自动播放」。被拦时不报错、不打断，
+ *   改为监听页面上第一次 pointerdown / touchstart 补播一次
+ *   —— 与 4 页 尝试续播() 同一个套路。
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    const 状态键 = '音乐播放状态';
+    const 目录候选 = ['1【音乐】/', '../1【音乐】/'];   // 与 4 页一致：html 挪进子文件夹时自动回退
+    const 库名 = '音乐库';
+    const 表名 = '音频';
+
+    /* ---------------------------------------------------------------
+     * IndexedDB：只为拿上传曲目的 blob，读不到就 null（调用方兜底）
+     * ------------------------------------------------------------- */
+    function 打开库() {
+        return new Promise((完成, 失败) => {
+            if (typeof indexedDB === 'undefined') return 失败(new Error('无 IndexedDB'));
+            let 请求;
+            try { 请求 = indexedDB.open(库名, 1); } catch (e) { return 失败(e); }
+            请求.onupgradeneeded = () => {
+                const db = 请求.result;
+                if (!db.objectStoreNames.contains(表名)) db.createObjectStore(表名, { keyPath: 'id' });
+            };
+            请求.onsuccess = () => 完成(请求.result);
+            请求.onerror = () => 失败(请求.error || new Error('打开失败'));
+        });
+    }
+
+    function 读一条(id) {
+        return 打开库().then(db => new Promise((完成, 失败) => {
+            const 事务 = db.transaction(表名, 'readonly');
+            const 请求 = 事务.objectStore(表名).get(id);
+            请求.onsuccess = () => 完成(请求.result || null);
+            请求.onerror = () => 失败(请求.error);
+        })).catch(() => null);
+    }
+
+    /* ---------------------------------------------------------------
+     * 存档读写
+     * ------------------------------------------------------------- */
+    function 读状态() {
+        try { return JSON.parse(localStorage.getItem(状态键) || 'null'); } catch (e) { return null; }
+    }
+
+    function 写状态(存) {
+        try { localStorage.setItem(状态键, JSON.stringify(存)); } catch (e) {}
+    }
+
+    /* ---------------------------------------------------------------
+     * 主体
+     * ------------------------------------------------------------- */
+    const 元素id = '全局音乐播放器';
+
+    /* =========================================================================
+     * ★ 占用管理：语音消息 / 语音通话 出声时，背景音乐让位
+     *
+     *   为什么用 Set 而不是布尔：两种占用可能重叠（比如播着语音条的同时来电话）。
+     *   布尔会在「语音播完恢复」时把仍在通话中的音乐也放出来。
+     *   记成「原因集合」，全部解除才恢复 —— 这是这类让位逻辑的正确写法。
+     *
+     *   另外要记住【占用前是否在播】：如果本来就没放音乐，
+     *   语音播完不该把音乐凭空启动。
+     * ======================================================================= */
+    const 占用 = new Set();
+    let 占用前在播 = false;
+    /* ★ 声明在 IIFE 顶层而不是 启动() 内：页尾探针 __全局音乐.补播中() 要访问它，
+         放在 启动() 里的话外层作用域取不到（TDZ / 未定义）。 */
+    let 补播中 = false;
+
+    /** 4 页让位时，操作目标是它自己的 #音乐播放器；否则是本脚本建的那个 */
+    function 取音频() {
+        return document.getElementById('音乐播放器') || document.getElementById(元素id);
+    }
+
+    const 全局音频 = {
+        /** 暂停背景音乐（可重入；同一原因重复调用无害） */
+        暂停(原因) {
+            const 键 = 原因 || '未命名';
+            if (占用.size === 0) {
+                const a = 取音频();
+                占用前在播 = !!a && !a.paused;
+            }
+            占用.add(键);
+            const a = 取音频();
+            if (a && !a.paused) { try { a.pause(); } catch (e) {} }
+        },
+
+        /** 解除某个占用；全部解除且占用前在播 → 恢复播放 */
+        恢复(原因) {
+            const 键 = 原因 || '未命名';
+            if (!占用.has(键)) return;
+            占用.delete(键);
+            if (占用.size > 0) return;              // 还有别的占用（比如仍在通话）
+            if (!占用前在播) return;                 // 本来就没在播 → 不凭空启动
+            const a = 取音频();
+            if (a && a.paused) {
+                const 试 = a.play();
+                if (试 && typeof 试.catch === 'function') 试.catch(() => {});
+            }
+        },
+
+        /** 强制清掉所有占用（异常路径兜底用） */
+        清除() { 占用.clear(); },
+
+        占用中() { return 占用.size > 0; },
+        占用表() { return Array.from(占用); },
+        是否在播() { const a = 取音频(); return !!a && !a.paused; },
+    };
+    /* ★ 无论让不让位都挂上：让位时它操作的是 4 页自己的播放器，
+       调用方（语音条 / 通话）不必关心自己在哪个页面。 */
+    window.全局音频 = 全局音频;
+
+    function 启动() {
+        /* ★★ 让位：4 页有完整播放器（#音乐播放器），这里绝不能再建第二个 audio。
+              注意 7 页那个是 #语音播放器（点语音消息用的），与本脚本无关，
+              各播各的，所以【只】认 #音乐播放器 这一个 id。 */
+        if (document.getElementById('音乐播放器')) return;
+        /* 防重：脚本万一被引了两次，也只建一个 audio */
+        if (document.getElementById(元素id)) return;
+
+        const 存 = 读状态();
+        // 没在播（或压根没播过）→ 安静退出，不建元素、不占资源
+        if (!存 || !存.播放中 || !存.名) return;
+
+        const 音频 = document.createElement('audio');
+        音频.id = 元素id;
+        音频.dataset.全局音乐 = '1';        // 便于排查 / 测试定位
+        音频.preload = 'metadata';
+        document.body.appendChild(音频);
+
+        const 目标 = Math.max(0, Number(存.时间) || 0);
+        let 已定位 = false;      // loadedmetadata 只处理一次（切目录会重复触发）
+        let 目录序 = 0;
+        let 上传链接 = '';
+
+        /* 跳回上次的秒数再播。★ 先 seek 后 play：
+           否则会从 0 开始，听感上像换了一首。 */
+        音频.addEventListener('loadedmetadata', () => {
+            if (已定位) return;
+            已定位 = true;
+            const 长 = isFinite(音频.duration) ? 音频.duration : 0;
+            try {
+                音频.currentTime = 长 > 0
+                    ? Math.min(目标, Math.max(0, 长 - 0.3))
+                    : 目标;
+            } catch (e) {}
+            续播();
+        });
+
+        /* 目录逐个试：与 4 页 载入当前目录() 同款（文件缺失 / 解码失败都能兜住） */
+        音频.addEventListener('error', () => {
+            if (目录序 < 目录候选.length) {
+                音频.src = encodeURI(目录候选[目录序++] + 存.名);
+            }
+        });
+
+        /* 播完了：不自动切歌（这里没有播放列表），停住并把状态改成「没在播」，
+           免得下一次进任意页面又从头播一遍。 */
+        音频.addEventListener('ended', () => {
+            写状态({ id: 存.id, 名: 存.名, 类型: 存.类型, 时间: 0, 播放中: false });
+        });
+
+        /* ---- 进度回写：下一页（或回到 4 页）要靠它续上 ---- */
+        function 存一次(播放中) {
+            写状态({
+                id: 存.id, 名: 存.名, 类型: 存.类型,
+                时间: 音频.currentTime || 0,
+                /* ★ 同 4 页那个坑：只认真正的布尔。pagehide / beforeunload
+                     的监听器会把 Event 对象当第一个参数传进来，
+                     `播放中 === undefined` 拦不住它 → `!!Event` = true。 */
+                播放中: typeof 播放中 !== 'boolean' ? !音频.paused : 播放中,
+            });
+        }
+        // 播着的时候每秒存一次，中途崩溃 / 强杀也不会丢太多
+        setInterval(() => { if (!音频.paused) 存一次(true); }, 1000);
+        // 离开页面再存一次：跳转、切后台、关闭三种情况都覆盖
+        const 存一次同步 = () => 存一次();
+        window.addEventListener('pagehide', 存一次同步);
+        window.addEventListener('beforeunload', 存一次同步);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') 存一次同步();
+        });
+
+        /* ------------------------------------------------------------
+         * 补播：浏览器会拦「没有用户手势」的自动播放，这是硬限制，绕不过去。
+         *   策略：
+         *     ① 直接播；
+         *     ② 被拒 → 【持续】监听用户交互，直到真的播起来才撤监听；
+         *     ③ 期间挂一个可见小条，告诉用户「点一下继续」。
+         *   ★★ 关键：不能用 once:true。那一次点击可能仍被拒（或音频还没
+         *      ready），失败后就再也没机会了 —— 表现正是「切过去没声音」。
+         *      必须【成功才停】，这是这段里最要紧的一句。
+         * ---------------------------------------------------------- */
+        const 事件名 = ['pointerdown', 'touchstart', 'click', 'keydown'];
+
+        function 撤补播() {
+            if (!补播中) return;
+            补播中 = false;
+            事件名.forEach(n => document.removeEventListener(n, 试补播, true));
+            document.removeEventListener('visibilitychange', 见可见);
+            收提示();
+        }
+
+        function 见可见() {
+            if (document.visibilityState === 'visible') 试补播();
+        }
+
+        function 试补播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();                     // 老浏览器无 Promise：当成功处理
+        }
+
+        /** 被拦 → 挂持续监听 + 显示提示条 */
+        function 展提示() {
+            if (!补播中) {
+                补播中 = true;
+                /* ★ 捕获阶段：冒泡阶段可能被页面自己的 stopPropagation 吃掉 */
+                事件名.forEach(n => document.addEventListener(n, 试补播, true));
+                document.addEventListener('visibilitychange', 见可见);
+            }
+            亮提示();
+        }
+
+        /* ---- 提示条：自建，不依赖各页自己的 toast 实现（各页不统一）---- */
+        let 提示元素 = null;
+        function 亮提示() {
+            if (提示元素) return;
+            const 条 = document.createElement('div');
+            条.id = '全局音乐提示';
+            条.textContent = '♪ 音乐已就绪，点一下继续播放';
+            // 样式全内联 + !important：各页 CSS 互不统一，不这样会被盖掉 / 变形
+            条.setAttribute('style', [
+                'position:fixed', 'left:50%', 'bottom:16px', 'transform:translateX(-50%)',
+                'z-index:99999', 'padding:8px 14px', 'border-radius:999px',
+                'background:rgba(28,28,32,0.86)', 'color:#fff', 'font-size:12px',
+                'letter-spacing:.3px', 'pointer-events:none',
+                'box-shadow:0 4px 16px rgba(0,0,0,.2)',
+                'transition:opacity .25s', 'opacity:0',
+                'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif',
+            ].join('!important;') + '!important');
+            document.body.appendChild(条);
+            提示元素 = 条;
+            setTimeout(() => { if (提示元素) 提示元素.style.opacity = '1'; }, 20);
+            setTimeout(收提示, 8000);           // 8 秒后自动收，别一直杵着
+        }
+        function 收提示() {
+            if (!提示元素) return;
+            const 条 = 提示元素;
+            提示元素 = null;
+            条.style.opacity = '0';
+            setTimeout(() => { if (条.parentNode) 条.parentNode.removeChild(条); }, 300);
+        }
+
+        function 续播() {
+            let 试;
+            try { 试 = 音频.play(); } catch (e) { 展提示(); return; }
+            if (试 && typeof 试.then === 'function') 试.then(撤补播).catch(展提示);
+            else 撤补播();
+        }
+
+        // 播起来了就收掉提示（例如用户从别处触发了播放）
+        音频.addEventListener('play', 撤补播);
+
+        /* ---- 载入：上传曲目走 blob URL，其余按目录拼路径 ---- */
+        function 载入默认() {
+            目录序 = 0;
+            音频.src = encodeURI(目录候选[目录序++] + 存.名);
+        }
+
+        if (存.类型 === '上传' && 存.id) {
+            读一条(存.id).then(记录 => {
+                if (记录 && 记录.数据) {
+                    try {
+                        上传链接 = URL.createObjectURL(记录.数据);
+                        音频.src = 上传链接;
+                        return;
+                    } catch (e) {}
+                }
+                载入默认();          // 读不到（库被清了）→ 退回按名字找文件
+            });
+        } else {
+            载入默认();
+        }
+    }
+
+    /* DOM 就绪再跑：4 页的 #音乐播放器 也在 body 里，早了会误判成「没有」
+       → 两个 audio 同时出声。 */
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    // 测试 / 调试用：暴露一个只读探针，验证脚本确实起来了
+    window.__全局音乐 = {
+        键: 状态键,
+        元素id: 元素id,
+        让位条件: () => !!document.getElementById('音乐播放器'),
+        占用: 全局音频.占用表,
+        补播中: () => 补播中,
+    };
+})();
+    </script>
+
+    <script id="软键盘适配">
+/* =============================================================================
+ * 软键盘适配.js —— 让输入框在手机输入法弹出时始终可见
+ *
+ * 【要解决什么】
+ *   全站每个页面都是「100dvh 的固定容器 + 中间滚动区 + 底部固定区」的结构：
+ *       .手机主题背景容器 { height: 100dvh; overflow: hidden; display:flex; column }
+ *         ├── .顶部固定区      (flex-shrink: 0)
+ *         ├── .手机界面内容    (flex: 1; overflow-y: auto)  ← 唯一滚动区
+ *         └── .底部输入区      (flex-shrink: 0)
+ *   容器高度被 100dvh 硬锁死，所以输入法一弹出：
+ *     · iOS Safari：layout viewport 不变，visual viewport 被键盘吃掉一块，
+ *       容器高度纹丝不动 → 底部输入区整个被键盘盖住。
+ *     · Android Chrome（resize 模式）：innerHeight 会变小，dvh 跟着变，
+ *       容器自动变矮 → 但只在部分浏览器成立，换一家就打回原形。
+ *   同一套代码在两家表现不一样，正是这次要抹平的东西。
+ *
+ * 【核心思路：只信 visualViewport】
+ *   键盘高度 = 基准布局高 − visualViewport.height − visualViewport.offsetTop
+ *   然后把容器高度直接设成 visualViewport.height，并整体平移 offsetTop。
+ *   —— 不猜机型、不猜浏览器，只认「当前真正能看见的这块矩形」，
+ *      所以 iOS / Android / 各家输入法走的都是同一条代码路径。
+ *
+ *   ★ 基准布局高不是实时的 window.innerHeight —— 这是最容易写错的一处。
+ *     Android 键盘弹出时 innerHeight 本身就会变小，拿实时 innerHeight 去减
+ *     visualViewport.height 会得到 0，等于永远检测不到键盘（典型的「安卓没效果」）。
+ *     基准只在「确认键盘收起」时更新，弹出期间冻结。
+ *
+ * 【两件事一起做，缺一个都会漏】
+ *   ① 容器自适应：解决「底部常驻输入区被盖」（7 页的 .底部输入区）
+ *   ② 焦点滚入可视：解决「滚动区里的输入框被盖」（2 / 11 / 19~22 页的表单）
+ *
+ * 【四条硬约束（需求点，改动时别破）】
+ *   ① 不抖动：高度变化 ≤ 2px 不写样式；所有写入合并进一帧 rAF；
+ *              键盘判定阈值 80px，避开地址栏收起、工具栏隐藏这类假信号。
+ *   ② 不丢焦点：全程不 blur、不重建 DOM、不动 tabindex、不改 DOM 顺序。
+ *   ③ 不整页滚：绝不用 window.scrollTo 做补偿 —— 那会让 iOS 整个 layout
+ *      viewport 上移，顶部被切掉且松手后弹不回来。只改容器高度与
+ *      「最近的可滚动祖先」的 scrollTop。
+ *   ④ 不硬编码机型：没有 User-Agent 判断，没有 iOS / Android 分支。
+ *
+ * 【降级】
+ *   没有 visualViewport（老浏览器）→ 退回 window.resize + innerHeight 比对。
+ *   再不行 → 什么都不做，恢复成页面原本的样子（不会更糟）。
+ *
+ * 【对外 API（业务与测试用）】
+ *   window.软键盘.是否弹出()   → bool
+ *   window.软键盘.键盘高度()   → 像素
+ *   window.软键盘.校准()       → 立刻重算一次（比如弹窗关闭后）
+ *   window.软键盘.让位(px)     → 声明额外的底部占用（如自定义输入条），
+ *                                容器会再让出这么多高度
+ *   window.软键盘._喂(...)     → 测试用：直接喂一个可视区矩形
+ *
+ * ★★ 本文件是唯一源。改完跑：python3 同步软键盘.py
+ *     （与 全局音乐.js / 音频助手.js 同一套内联同步机制）
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    /* ------------------------------------------------------------------
+     * 常量
+     * ---------------------------------------------------------------- */
+    const 容器类名 = '手机主题背景容器';
+    const 弹出阈值 = 80;      // 键盘高度超过它才认定「键盘弹出了」
+    const 变化阈值 = 2;       // 高度变化不超过它就不写样式，省掉无意义的重排
+    const 底部余量 = 14;      // 焦点元素与可视区底部之间留的呼吸位
+    const 顶部余量 = 8;
+    const 类名键已弹 = '软键盘已弹出';
+    const 样式id = '软键盘适配样式';
+
+    const vv = (typeof window.visualViewport === 'object' && window.visualViewport)
+        ? window.visualViewport : null;
+
+    /* ------------------------------------------------------------------
+     * 状态
+     * ---------------------------------------------------------------- */
+    let 容器 = null;
+    let 基准高 = 0;           // 「键盘收起时」的布局高度，弹出期间冻结
+    let 已弹出 = false;
+    let 上次可视高 = 0;
+    let 上次偏移 = 0;
+    let 帧 = 0;               // rAF 句柄，用于合并
+    let 额外让位 = 0;         // window.软键盘.让位() 设进来的额外高度
+    let 焦点 = null;          // 最近一次聚焦的输入元素
+
+    /* ------------------------------------------------------------------
+     * 小工具
+     * ---------------------------------------------------------------- */
+    function 是输入框(el) {
+        if (!el || !el.tagName) return false;
+        const 标签 = el.tagName.toLowerCase();
+        return 标签 === 'input' || 标签 === 'textarea'
+            || (标签 === 'div' && el.isContentEditable === true);
+    }
+
+    /** 找容器：优先类名（全站统一），退化到 body 的唯一直接子元素 */
+    function 找容器() {
+        if (容器 && 容器.isConnected) return 容器;
+        容器 = document.querySelector('.' + 容器类名) || null;
+        return 容器;
+    }
+
+    function 可视顶() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+    function 可视底() {
+        if (vv) return (vv.offsetTop || 0) + vv.height;
+        return (window.scrollY || 0) + window.innerHeight;
+    }
+    function 当前可视高() { return vv ? vv.height : window.innerHeight; }
+    function 当前偏移() { return vv ? (vv.offsetTop || 0) : (window.scrollY || 0); }
+
+    /* ------------------------------------------------------------------
+     * 注入样式：只在键盘弹出时生效，收起即移除，不留残余
+     * ---------------------------------------------------------------- */
+    function 装样式() {
+        if (document.getElementById(样式id)) return;
+        const 样式 = document.createElement('style');
+        样式.id = 样式id;
+        /* ★ 用 class 而不是内联 style：收起时摘掉 class 就能还原，
+             不用逐个记住页面原本的 align-items / padding 是多少。 */
+        样式.textContent =
+            'html.' + 类名键已弹 + ' body{align-items:flex-start !important;}\n' +
+            'html.' + 类名键已弹 + ' .' + 容器类名 + '{padding-bottom:0 !important;}\n';
+        (document.head || document.documentElement).appendChild(样式);
+    }
+
+    /* ------------------------------------------------------------------
+     * 核心：把容器压到「真正看得见」的那块矩形里
+     * ---------------------------------------------------------------- */
+    function 应用() {
+        const 盒 = 找容器();
+        if (!盒) return;
+
+        const 可视高 = 当前可视高();
+        const 偏移 = 当前偏移();
+
+        if (!基准高) 基准高 = window.innerHeight || 可视高;
+
+        /* ★★ 键盘高度：基准 − 可视高 − 偏移。
+              基准在弹出期间冻结，所以 Android 那种「innerHeight 自己也会缩」
+              的情况同样算得出来。 */
+        let 键盘 = 基准高 - 可视高 - 偏移;
+        if (键盘 < 0) 键盘 = 0;
+
+        const 弹出 = 键盘 > 弹出阈值;
+
+        /* 状态没变、且可视高几乎没动 → 什么都不做（防抖动的第①道闸） */
+        if (弹出 === 已弹出
+            && Math.abs(可视高 - 上次可视高) <= 变化阈值
+            && Math.abs(偏移 - 上次偏移) <= 变化阈值) {
+            if (弹出) 校准焦点();
+            return;
+        }
+
+        上次可视高 = 可视高;
+        上次偏移 = 偏移;
+        已弹出 = 弹出;
+
+        const 根 = document.documentElement;
+        const 体 = document.body;
+
+        if (弹出) {
+            装样式();
+            if (!根.classList.contains(类名键已弹)) 根.classList.add(类名键已弹);
+
+            /* 容器高度 = 真正看得见的高度（再减去业务声明的额外让位） */
+            const 目标高 = Math.max(120, 可视高 - 额外让位);
+            盒.style.height = 目标高 + 'px';
+            盒.style.minHeight = 目标高 + 'px';
+            /* 跟着 visualViewport 的偏移走（iOS 页面被上推时靠它归位） */
+            盒.style.transform = (偏移 ? 'translateY(' + 偏移 + 'px)' : '');
+
+            /* ③ 不整页滚：只在系统确实把 layout viewport 推走时温和拉回原点。
+                 阈值 4px 是为了不跟正常的 1~2px 抖动打架。 */
+            if (!vv && (window.pageYOffset || 0) > 4 && 体) {
+                const 体溢出 = window.getComputedStyle(体).overflow;
+                if (体溢出 === 'hidden' || 体溢出 === 'clip') window.scrollTo(0, 0);
+            }
+        } else {
+            /* 收起：摘 class、清掉所有内联改动，回到页面原本的样子 */
+            if (根.classList.contains(类名键已弹)) 根.classList.remove(类名键已弹);
+            盒.style.height = '';
+            盒.style.minHeight = '';
+            盒.style.transform = '';
+            /* 收起时基准可以放心更新 —— 此刻量到的就是「无键盘」的真实高度 */
+            基准高 = window.innerHeight || 可视高;
+        }
+
+        /* 容器变矮之后滚动区也变矮，焦点元素可能又落到可视区外 → 再校准一次 */
+        校准焦点();
+    }
+
+    /** 合并到下一帧，避免 resize 连发时反复读写布局 */
+    function 排一帧() {
+        if (帧) return;
+        const 跑 = window.requestAnimationFrame
+            || function (f) { return setTimeout(f, 16); };
+        帧 = 跑(function () { 帧 = 0; 应用(); });
+    }
+
+    /* ------------------------------------------------------------------
+     * ② 焦点滚入可视
+     * ---------------------------------------------------------------- */
+    /** 向上找最近一个「真的能滚」的祖先 */
+    function 找滚动祖先(el) {
+        let n = el ? el.parentElement : null;
+        while (n && n !== document.body && n !== document.documentElement) {
+            const 样式 = window.getComputedStyle(n);
+            const 可滚 = /(auto|scroll|overlay)/.test(样式.overflowY || '');
+            if (可滚 && n.scrollHeight > n.clientHeight + 1) return n;
+            n = n.parentElement;
+        }
+        return null;
+    }
+
+    /**
+     * 把焦点元素挪进可视区。
+     * ★ 只动「最近滚动祖先」的 scrollTop —— 不动 window，避免整页位移。
+     * ★ 元素本来就在可视区里时什么都不做，不会没事乱滚。
+     */
+    function 校准焦点() {
+        const el = 焦点 || document.activeElement;
+        if (!是输入框(el)) return;
+        if (!找容器()) return;
+
+        const 矩形 = el.getBoundingClientRect();
+        if (!矩形.height && !矩形.top) return;      // 还没布局完，跳过
+
+        const 下界 = 可视底() - 底部余量;
+        const 上界 = 可视顶() + 顶部余量;
+
+        let 差 = 0;
+        if (矩形.bottom > 下界) 差 = 矩形.bottom - 下界;
+        else if (矩形.top < 上界) 差 = 矩形.top - 上界;
+
+        if (Math.abs(差) <= 1) return;
+
+        const 滚动父 = 找滚动祖先(el);
+        /* 不在任何滚动区里（比如底部常驻输入区）：容器已经跟着可视区收缩了，
+           理论上不该再超出。真超了也不碰 window —— 那才是抖动的根源。 */
+        if (滚动父) 滚动父.scrollTop += 差;
+    }
+
+    /* ------------------------------------------------------------------
+     * 事件
+     * ---------------------------------------------------------------- */
+    function 起监听() {
+        /* ① visualViewport：键盘弹出 / 收起 / 页面被上推 都走这里，逐帧跟随 */
+        if (vv) {
+            vv.addEventListener('resize', 排一帧);
+            vv.addEventListener('scroll', function () {
+                /* iOS 键盘弹出时若系统把 layout viewport 推走，offsetTop 会变，
+                   这里同步一下容器位置，避免顶部被切掉。 */
+                if (已弹出) 排一帧();
+            });
+        }
+
+        /* ② 降级：没有 visualViewport 的老浏览器，靠 window.resize */
+        window.addEventListener('resize', 排一帧);
+
+        /* ③ 方向变化：横竖屏切换后基准要重测 */
+        window.addEventListener('orientationchange', function () {
+            基准高 = 0;
+            setTimeout(排一帧, 120);
+        });
+
+        /* ④ 聚焦：记下元素并立刻校准一次。
+             键盘弹出是异步动画（iOS 约 250ms），所以这里先做一次「预防性」校准，
+             随后 visualViewport.resize 每帧触发时会继续跟着校准到最终位置。 */
+        document.addEventListener('focusin', function (e) {
+            if (!是输入框(e.target)) return;
+            焦点 = e.target;
+            /* 先测一次基准：此刻键盘还没弹，量到的正是无键盘高度 */
+            if (!已弹出) 基准高 = window.innerHeight || 当前可视高();
+            setTimeout(排一帧, 30);
+        }, true);
+
+        /* ⑤ 失焦：键盘收起由 resize 兜底，这里只清记录、不主动改布局
+              —— 切到下一个输入框时 focusin 会立刻接手，不会闪。 */
+        document.addEventListener('focusout', function (e) {
+            if (焦点 === e.target) 焦点 = null;
+        }, true);
+
+        /* ⑥ 切后台回来：尺寸可能已经变了 */
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) { 基准高 = 0; 排一帧(); }
+        });
+    }
+
+    /* ------------------------------------------------------------------
+     * 启动
+     * ---------------------------------------------------------------- */
+    function 启动() {
+        找容器();
+        基准高 = window.innerHeight || 当前可视高();
+        上次可视高 = 当前可视高();
+        上次偏移 = 当前偏移();
+        起监听();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', 启动);
+    } else {
+        启动();
+    }
+
+    /* ------------------------------------------------------------------
+     * 对外 API
+     * ---------------------------------------------------------------- */
+    window.软键盘 = {
+        是否弹出: function () { return 已弹出; },
+        键盘高度: function () {
+            return Math.max(0, 基准高 - 当前可视高() - 当前偏移());
+        },
+        校准: 排一帧,
+        /** 业务声明额外的底部占用（例如自定义输入条），容器再让出这么多 */
+        让位: function (px) {
+            额外让位 = Math.max(0, Number(px) || 0);
+            排一帧();
+        },
+        /**
+         * 测试用：直接喂一个「可视区矩形」，跳过真实环境探测。
+         *   _喂(可视高, 偏移, 布局高)
+         * · 有 visualViewport：改它的 height / offsetTop
+         * · 没有（降级路径）：改 window.innerHeight
+         * 两种都是测试替身走的同一条代码路径，所以断言对真机同样成立。
+         */
+        _喂: function (可视高, 偏移, 布局高) {
+            if (typeof 布局高 === 'number' && 布局高 > 0) 基准高 = 布局高;
+            上次可视高 = -999;                 // 强制通过变化阈值，保证一定重算
+            if (vv) {
+                try {
+                    vv.height = 可视高;
+                    vv.offsetTop = 偏移 || 0;
+                } catch (e) {
+                    Object.defineProperty(vv, 'height', { value: 可视高, configurable: true });
+                    Object.defineProperty(vv, 'offsetTop', { value: 偏移 || 0, configurable: true });
+                }
+            } else {
+                try { window.innerHeight = 可视高; } catch (e) {
+                    Object.defineProperty(window, 'innerHeight',
+                        { value: 可视高, configurable: true, writable: true });
+                }
+            }
+            应用();
+            return true;
+        },
+        /** 测试用：当前容器被压到的高度（内联样式里的值，未设置则空串） */
+        _容器高: function () {
+            const 盒 = 找容器();
+            return 盒 ? (盒.style.height || '') : null;
+        },
+    };
+})();
+    </script>
+</body>
+</html>

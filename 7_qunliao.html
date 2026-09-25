@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>7 群聊</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="手机">
+  <div class="页面">
+    <!-- 置顶标题：主标题=群名，副标题=人数；整块可点 → 18 页群资料 -->
+    <div class="导航栏">
+      <button class="导航按钮" onclick="location.href='1_xiaoxi.html'">‹</button>
+      <div class="导航标题">
+        <div class="标题可点" id="标题区">
+          <div class="主" id="群名">群聊</div>
+          <div class="副" id="人数"></div>
+        </div>
+      </div>
+      <button class="导航按钮" id="更多" style="font-size:20px">⋯</button>
+    </div>
+
+    <div class="消息区" id="消息区"></div>
+
+    <div class="输入栏">
+      <input id="输入框" placeholder="发消息…">
+      <button class="发送键" id="发送">发送</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/store.js"></script>
+<script src="js/ui.js"></script>
+<script>
+(function () {
+  var id = new URLSearchParams(location.search).get('id');
+  var g = Store.群(id);
+  if (!g) { document.body.innerHTML = '<div class="空态">群不存在，<a href="1_xiaoxi.html">返回消息列表</a></div>'; return; }
+
+  var 消息区 = document.getElementById('消息区');
+
+  function 渲染() {
+    g = Store.群(id);                       // 每次都重新取，保证是最新数据
+    if (!g) { location.href = '1_xiaoxi.html'; return; }
+    document.title = g.名称;
+    document.getElementById('群名').textContent = g.名称 + (g.免打扰 ? ' 🔇' : '');
+    document.getElementById('人数').textContent = '(' + g.成员.length + '人) · 点击修改群资料';
+
+    消息区.innerHTML = (g.消息 || []).map(function (m) {
+      if (m.类型 === 'system') return '<div class="系统条">' + m.文本 + '</div>';
+      var 我 = m.from === 'me';
+      var 显名 = 我 ? (g.我在本群昵称 || Store.me().名称) : Store.昵称(m.from);
+      return '<div class="消息' + (我 ? ' 我' : '') + '">' +
+        (我 ? UI.单人头像(Store.me().头像) : UI.单人头像(Store.头像(m.from))) +
+        '<div><div class="名">' + 显名 + '</div><div class="泡">' + m.文本 + '</div></div></div>';
+    }).join('') || '<div class="空态">还没有消息</div>';
+    消息区.scrollTop = 消息区.scrollHeight;
+  }
+
+  /* 置顶标题 → 18 页群资料 */
+  document.getElementById('标题区').onclick = function () {
+    location.href = '18_qunziliao.html?id=' + id;
+  };
+  document.getElementById('更多').onclick = function () {
+    location.href = '18_qunziliao.html?id=' + id;
+  };
+
+  function 发() {
+    var v = document.getElementById('输入框').value.trim();
+    if (!v) return;
+    Store.发消息(id, v);
+    document.getElementById('输入框').value = '';
+  }
+  document.getElementById('发送').onclick = 发;
+  document.getElementById('输入框').addEventListener('keydown', function (e) { if (e.key === 'Enter') 发(); });
+
+  /* 同步：18 页保存后回写，这里自动重渲染（含 bfcache 返回、跨标签修改） */
+  Store.on(渲染);
+  渲染();
+})();
+</script>
+</body>
+</html>
